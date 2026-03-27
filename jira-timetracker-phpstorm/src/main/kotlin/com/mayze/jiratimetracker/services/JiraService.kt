@@ -14,9 +14,9 @@ class JiraService {
             ?: error("No active Jira profile. Open the Jira panel and add a profile.")
         val token = state.getToken(profile.id)
         require(profile.baseUrl.isNotBlank()) { "Base URL is empty in profile \"${profile.name}\"" }
-        require(profile.emailOrUsername.isNotBlank()) { "Email/Username is empty in profile \"${profile.name}\"" }
+        if (profile.isCloud) require(profile.emailOrUsername.isNotBlank()) { "Email/Username is empty in profile \"${profile.name}\"" }
         require(token.isNotBlank()) { "Token is empty in profile \"${profile.name}\"" }
-        return JiraApi(JiraAuth(baseUrl = profile.baseUrl, usernameOrEmail = profile.emailOrUsername, tokenOrPassword = token))
+        return JiraApi(JiraAuth(baseUrl = profile.baseUrl, usernameOrEmail = profile.emailOrUsername, tokenOrPassword = token, isCloud = profile.isCloud))
     }
 
     fun activeProfileName(): String? = service<JiraProfilesState>().activeProfile()?.name

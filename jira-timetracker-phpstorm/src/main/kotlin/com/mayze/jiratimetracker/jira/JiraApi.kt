@@ -686,11 +686,20 @@ class JiraApi(private val auth: JiraAuth) {
     }
 
     private fun requestText(method: String, url: String, body: String?): Pair<Int, String> {
+        val result = doRequest(method, url, body, auth.authHeaderValue())
+        // If Bearer auth failed with 401, retry with Basic auth (for Server/DC with password)
+        if (result.first == 401 && !auth.isCloud) {
+            return doRequest(method, url, body, auth.basicAuthHeaderValue())
+        }
+        return result
+    }
+
+    private fun doRequest(method: String, url: String, body: String?, authHeader: String): Pair<Int, String> {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 15000
             readTimeout = 30000
-            setRequestProperty("Authorization", auth.authHeaderValue())
+            setRequestProperty("Authorization", authHeader)
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "JiraTimeTrackerPlugin")
             if (body != null) {
