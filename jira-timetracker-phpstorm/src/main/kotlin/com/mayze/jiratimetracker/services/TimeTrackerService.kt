@@ -217,7 +217,7 @@ class TimeTrackerService(private val project: Project) {
 
     private fun notify(title: String, content: String) {
         NotificationGroupManager.getInstance()
-            .getNotificationGroup("YeDu Jira Tracker")
+            .getNotificationGroup("Jira Time Tracker")
             .createNotification(title, content, NotificationType.INFORMATION)
             .notify(project)
     }
