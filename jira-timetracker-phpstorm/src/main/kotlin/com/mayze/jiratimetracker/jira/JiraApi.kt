@@ -163,7 +163,8 @@ class JiraApi(private val auth: JiraAuth) {
                 val arr = try { JSONArray(ft) } catch (_: Throwable) { null }
                 if (arr != null) for (i in 0 until arr.length()) {
                     val f = arr.optJSONObject(i) ?: continue
-                    val id = f.optString("id").ifBlank { continue }
+                    val id = f.optString("id")
+                    if (id.isBlank()) continue
                     val n = f.optString("name").ifBlank { null } ?: id
                     fieldNames[id] = n
                 }
@@ -229,8 +230,8 @@ class JiraApi(private val auth: JiraAuth) {
             }
         }
         is JSONArray -> {
-            if (v.length() == 0) return ""
-            (0 until v.length()).mapNotNull { i ->
+            if (v.length() == 0) ""
+            else (0 until v.length()).mapNotNull { i ->
                 val item = v.opt(i)
                 when (item) {
                     is String -> item
