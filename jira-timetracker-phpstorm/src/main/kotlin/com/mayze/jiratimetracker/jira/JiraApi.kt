@@ -85,9 +85,14 @@ class JiraApi(private val auth: JiraAuth) {
         projectKey: String,
         maxResults: Int = 50,
         statuses: List<String> = emptyList(),
-        onlyWithoutEstimate: Boolean = false
+        onlyWithoutEstimate: Boolean = false,
+        scope: String = "My issues"
     ): List<JiraIssue> {
-        var jql = "assignee = currentUser() AND project = $projectKey"
+        var jql = when (scope) {
+            "Involved" -> "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) AND project = $projectKey"
+            "All project" -> "project = $projectKey"
+            else -> "assignee = currentUser() AND project = $projectKey"
+        }
         if (statuses.isNotEmpty()) {
             val statusList = statuses.joinToString(",") { "\"$it\"" }
             jql += " AND status in ($statusList)"
@@ -146,6 +151,122 @@ class JiraApi(private val auth: JiraAuth) {
             return parseIssue(j2)
         }
         return parseIssue(json)
+    }
+
+    /** Returns ALL fields as raw key-value pairs for the Fields tab */
+    fun getAllIssueFields(issueKey: String): List<Pair<String, String>> {
+        val (code, json) = tryGetJson("$base/rest/api/3/issue/$issueKey")
+        val raw = if (code == 200) json else {
+            val (c2, j2) = tryGetJson("$base/rest/api/2/issue/$issueKey")
+            if (c2 != 200) return listOf("Error" to "HTTP $code / $c2")
+            j2
+        }
+        val fields = raw.optJSONObject("fields") ?: return emptyList()
+        val result = mutableListOf<Pair<String, String>>()
+        for (key in fields.keys().asSequence().sorted()) {
+            val v = fields.opt(key) ?: continue
+            val display = fieldToDisplay(v)
+            if (display.isNotBlank()) result.add(key to display)
+        }
+        return result
+    }
+
+    private fun fieldToDisplay(v: Any?): String = when (v) {
+        null, JSONObject.NULL -> ""
+        is String -> v
+        is Number -> v.toString()
+        is Boolean -> v.toString()
+        is JSONObject -> {
+            // Common patterns: {name:"X"}, {displayName:"X"}, {value:"X"}, {key:"X"}
+            v.optString("name").ifBlank { null }
+                ?: v.optString("displayName").ifBlank { null }
+                ?: v.optString("value").ifBlank { null }
+                ?: v.optString("key").ifBlank { null }
+                ?: v.optString("emailAddress").ifBlank { null }
+                ?: jiraRichTextToPlain(v).ifBlank { v.toString().take(200) }
+        }
+        is JSONArray -> {
+            (0 until v.length()).mapNotNull { i ->
+                val item = v.opt(i)
+                fieldToDisplay(item).ifBlank { null }
+            }.joinToString(", ").ifBlank { "" }
+        }
+        else -> v.toString().take(200)
+    }
+
+    /** Returns description as HTML (from ADF or plain text) */
+    fun getIssueDescriptionHtml(issueKey: String): String {
+        val (code, json) = tryGetJson("$base/rest/api/3/issue/$issueKey?fields=description,attachment")
+        val raw = if (code == 200) json else {
+            val (c2, j2) = tryGetJson("$base/rest/api/2/issue/$issueKey?fields=description,attachment")
+            if (c2 != 200) return "<p>Error loading description</p>"
+            j2
+        }
+        val fields = raw.optJSONObject("fields") ?: return ""
+        val desc = fields.opt("description")
+        val html = if (desc is JSONObject) adfToHtml(desc) else (desc?.toString() ?: "").replace("\n", "<br/>")
+
+        val attachments = fields.optJSONArray("attachment")
+        val attHtml = if (attachments != null && attachments.length() > 0) {
+            val sb = StringBuilder("<hr/><b>Attachments:</b><br/>")
+            for (i in 0 until attachments.length()) {
+                val a = attachments.optJSONObject(i) ?: continue
+                val name = a.optString("filename")
+                val url = a.optString("content")
+                val mime = a.optString("mimeType")
+                val thumb = a.optString("thumbnail").ifBlank { null }
+                if (mime.startsWith("image/") && thumb != null) {
+                    sb.append("<p><b>$name</b><br/><a href='$url'>$url</a></p>")
+                } else {
+                    sb.append("<p><a href='$url'>$name</a> [$mime]</p>")
+                }
+            }
+            sb.toString()
+        } else ""
+
+        return "<html><body style='font-family:sans-serif;font-size:12px;padding:8px'>$html$attHtml</body></html>"
+    }
+
+    private fun adfToHtml(node: JSONObject): String {
+        val sb = StringBuilder()
+        val type = node.optString("type")
+        val text = node.optString("text")
+        val content = node.optJSONArray("content")
+
+        when (type) {
+            "doc" -> content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }
+            "paragraph" -> { sb.append("<p>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</p>") }
+            "heading" -> { val lvl = node.optInt("attrs.level", 3).coerceIn(1,6); sb.append("<h$lvl>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</h$lvl>") }
+            "text" -> {
+                var t = text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                val marks = node.optJSONArray("marks")
+                if (marks != null) for (i in 0 until marks.length()) {
+                    when (marks.getJSONObject(i).optString("type")) {
+                        "strong" -> t = "<b>$t</b>"
+                        "em" -> t = "<i>$t</i>"
+                        "code" -> t = "<code>$t</code>"
+                        "link" -> { val href = marks.getJSONObject(i).optJSONObject("attrs")?.optString("href") ?: ""; t = "<a href='$href'>$t</a>" }
+                    }
+                }
+                sb.append(t)
+            }
+            "hardBreak" -> sb.append("<br/>")
+            "bulletList" -> { sb.append("<ul>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</ul>") }
+            "orderedList" -> { sb.append("<ol>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</ol>") }
+            "listItem" -> { sb.append("<li>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</li>") }
+            "codeBlock" -> { sb.append("<pre>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</pre>") }
+            "blockquote" -> { sb.append("<blockquote>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</blockquote>") }
+            "rule" -> sb.append("<hr/>")
+            "mediaGroup", "mediaSingle" -> content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }
+            "media" -> { val id = node.optJSONObject("attrs")?.optString("id") ?: ""; sb.append("<p>[media: $id]</p>") }
+            "inlineCard" -> { val url = node.optJSONObject("attrs")?.optString("url") ?: ""; sb.append("<a href='$url'>$url</a>") }
+            "table" -> { sb.append("<table border='1' cellpadding='4'>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</table>") }
+            "tableRow" -> { sb.append("<tr>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</tr>") }
+            "tableHeader" -> { sb.append("<th>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</th>") }
+            "tableCell" -> { sb.append("<td>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</td>") }
+            else -> content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }
+        }
+        return sb.toString()
     }
 
     /** Returns available transitions for an issue */

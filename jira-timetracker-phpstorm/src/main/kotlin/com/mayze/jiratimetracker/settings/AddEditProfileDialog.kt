@@ -44,6 +44,12 @@ class AddEditProfileDialog(
             .addLabeledComponent("Base URL:", baseUrlField, 1, false)
             .addLabeledComponent("Email / Username:", emailField, 1, false)
             .addLabeledComponent("API token / Password:", tokenField, 1, false)
+            .addComponent(javax.swing.JLabel("<html><small><a href='https://id.atlassian.com/manage-profile/security/api-tokens'>Get API token for Jira Cloud</a></small></html>").apply {
+                cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+                addMouseListener(object : java.awt.event.MouseAdapter() {
+                    override fun mouseClicked(e: java.awt.event.MouseEvent?) { try { java.awt.Desktop.getDesktop().browse(java.net.URI("https://id.atlassian.com/manage-profile/security/api-tokens")) } catch (_: Throwable) {} }
+                })
+            })
             .addComponent(isCloudBox)
             .addSeparator()
             .addLabeledComponent("Update interval (min):", intervalField, 1, false)

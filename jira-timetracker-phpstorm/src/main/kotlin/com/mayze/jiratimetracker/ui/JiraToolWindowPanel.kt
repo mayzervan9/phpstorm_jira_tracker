@@ -47,6 +47,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
 
     private val statusFilterCombo = ComboBox(DefaultComboBoxModel(arrayOf("All statuses")))
     private val noEstimateCheck = JBCheckBox("No estimate only").apply { isOpaque = false }
+    private val scopeCombo = ComboBox(DefaultComboBoxModel(arrayOf("My issues", "Involved", "All project"))).apply { toolTipText = "Filter scope" }
     private val projectCombo = ComboBox<JiraProject>()
     private val searchField  = SearchTextField(false).apply { textEditor.emptyText.text = "Filter issues..." }
     private val issuesModel  = DefaultListModel<JiraIssue>()
@@ -61,7 +62,11 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val copyKeyBtn       = ib(AllIcons.Nodes.CopyOfFolder, "Copy issue key")
     private val setEstimateBtn   = ib(AllIcons.Actions.Edit, "Set estimate")
     private val changeStatusBtn  = JButton("Status").apply { font = font.deriveFont(Font.PLAIN, 11f); icon = AllIcons.Actions.Forward }
-    private val descArea = roArea()
+    private val descPane = javax.swing.JEditorPane("text/html", "").apply {
+        isEditable = false; border = JBUI.Borders.empty(8)
+        addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) { try { Desktop.getDesktop().browse(e.url.toURI()) } catch (_: Throwable) {} } }
+    }
+    private val fieldsArea = roArea()
     private val commentsModel = DefaultListModel<JiraComment>()
     private val commentsList  = JBList(commentsModel).apply { cellRenderer = CommentListCellRenderer(); selectionMode = ListSelectionModel.SINGLE_SELECTION }
     private val worklogsModel = DefaultListModel<JiraWorklog>()
@@ -122,7 +127,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun buildSplitter() = JBSplitter(false, 0.28f).apply { firstComponent = buildLeft(); secondComponent = buildRight() }
     private fun buildLeft(): JPanel {
         val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER) }
-        val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(statusFilterCombo); add(noEstimateCheck) }
+        val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(noEstimateCheck) }
         return JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply { add(top, BorderLayout.NORTH); add(JPanel(BorderLayout()).apply { add(JPanel(BorderLayout()).apply { border=JBUI.Borders.empty(0,8,2,8); add(searchField, BorderLayout.CENTER) }, BorderLayout.NORTH); add(filters, BorderLayout.CENTER) }, BorderLayout.CENTER) }, BorderLayout.NORTH)
             add(JBScrollPane(issuesList).apply { border=JBUI.Borders.empty() }, BorderLayout.CENTER)
@@ -132,10 +137,11 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun buildRight(): JPanel {
         val metaBar = JPanel(FlowLayout(FlowLayout.LEFT,6,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,4,8); add(issueStatusLabel); add(estimateLabel); add(copyKeyBtn); add(openInBrowserBtn); add(copyLinkBtn); add(setEstimateBtn); add(changeStatusBtn) }
         val detailTabs = JTabbedPane().apply {
-            addTab("Description", AllIcons.Actions.Preview, sp(descArea))
+            addTab("Description", AllIcons.Actions.Preview, sp(descPane))
             addTab("Comments", AllIcons.General.Balloon, sp(commentsList))
             addTab("Worklogs", AllIcons.Vcs.History, sp(worklogsList))
-            addChangeListener { val key = currentIssue?.key ?: return@addChangeListener; when (selectedIndex) { 1 -> refreshComments(key); 2 -> refreshWorklogs(key) } }
+            addTab("Fields", AllIcons.Nodes.DataTables, sp(fieldsArea))
+            addChangeListener { val key = currentIssue?.key ?: return@addChangeListener; when (selectedIndex) { 1 -> refreshComments(key); 2 -> refreshWorklogs(key); 3 -> refreshFields(key) } }
         }
         val actionTabs = JTabbedPane().apply { addTab("Tracker", AllIcons.Actions.Execute, buildTracker()); addTab("Comment", AllIcons.General.Add, buildCommentP()); addTab("MR/PR", AllIcons.Vcs.Merge, buildMrP()); addTab("Today", AllIcons.Vcs.History, buildTodayP()) }
         val issuePanel = JPanel(BorderLayout()).apply {
@@ -174,6 +180,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         projectCombo.addActionListener { onProjectSelected() }
         statusFilterCombo.addActionListener { loadIssues() }
         noEstimateCheck.addActionListener   { loadIssues() }
+        scopeCombo.addActionListener        { loadIssues() }
         searchField.addDocumentListener(object : DocumentListener { override fun insertUpdate(e: DocumentEvent?)=filterIssues(); override fun removeUpdate(e: DocumentEvent?)=filterIssues(); override fun changedUpdate(e: DocumentEvent?)=filterIssues() })
         issuesList.addListSelectionListener { if (!it.valueIsAdjusting) { val i = issuesList.selectedValue ?: return@addListSelectionListener; project.service<TimeTrackerService>().setActiveIssue(i.key); loadIssueDetails(i.key) } }
         openInBrowserBtn.addActionListener { openBrowser() }
@@ -221,16 +228,18 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         val sel = statusFilterCombo.selectedItem as? String; val statuses = if (sel == null || sel == "All statuses") emptyList() else listOf(sel)
         setStatus(true, "Loading...")
         runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
-            val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statuses, noEstimateCheck.isSelected)
+            val scope = scopeCombo.selectedItem as? String ?: "My issues"
+            val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statuses, noEstimateCheck.isSelected, scope)
             runUi { allIssues = issues; setStatus(false, "${p.key} - ${issues.size} issues"); filterIssues(); if (issuesModel.size() > 0) issuesList.selectedIndex = 0 }
         }
     }
     private fun filterIssues() { val q = searchField.text.trim().lowercase(); val f = if (q.isBlank()) allIssues else allIssues.filter { it.key.lowercase().contains(q) || it.summary.lowercase().contains(q) }; issuesModel.clear(); f.forEach { issuesModel.addElement(it) } }
 
     private fun loadIssueDetails(issueKey: String) {
-        issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descArea.text = "Loading..."; commentsModel.clear(); worklogsModel.clear()
-        runBg(onError = { runUi { descArea.text = "Error: ${it.message}" } }) {
+        issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descPane.text = "<html><body>Loading...</body></html>"; commentsModel.clear(); worklogsModel.clear()
+        runBg(onError = { runUi { descPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
             val api = service<JiraService>().apiFromSettings(); val issue = api.getIssueDetails(issueKey); val cs = api.getComments(issueKey); val wls = api.getWorklogs(issueKey)
+            val descHtml = try { api.getIssueDescriptionHtml(issueKey) } catch (_: Throwable) { "<html><body>${issue.description ?: ""}</body></html>" }
             runUi {
                 currentIssue = issue
                 issueTitleLabel.text = "<html><b>${issue.key}</b> — ${issue.summary}</html>"
@@ -238,17 +247,22 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
                 issueStatusLabel.text = if (issue.status != null) "<html><span style='color:$sc'><b>${issue.status}</b></span></html>" else ""
                 val orig = issue.originalEstimateSeconds; val rem = issue.remainingEstimateSeconds
                 estimateLabel.text = when { orig != null && rem != null -> "Est: ${formatSecondsShort(orig)}  Rem: ${formatSecondsShort(rem)}"; orig != null -> "Est: ${formatSecondsShort(orig)}"; else -> "<html><span style='color:#F9A825'><b>⚠ No estimate</b></span></html>" }
-                val sb = StringBuilder()
-                if (!issue.parentKey.isNullOrBlank()) sb.append("Parent: ${issue.parentKey}\n\n")
-                sb.append(issue.description?.ifBlank { "(no description)" } ?: "(no description)")
-                if (issue.subtasks.isNotEmpty()) { sb.append("\n\n── Subtasks ─────────────────────\n"); issue.subtasks.forEach { s -> val d = when(s.statusCategory){"done"->"✓";"indeterminate"->"▶";else->"○"}; sb.append("$d ${s.key}  ${s.status.orEmpty().padEnd(14)}  ${s.summary}\n") } }
-                if (issue.linkedIssues.isNotEmpty()) { sb.append("\n── Linked Issues ────────────────\n"); issue.linkedIssues.forEach { l -> val d = when(l.statusCategory){"done"->"✓";"indeterminate"->"▶";else->"○"}; sb.append("$d [${l.type}]  ${l.issueKey}  ${l.status.orEmpty().padEnd(14)}  ${l.summary}\n") } }
-                if (issue.attachmentUrls.isNotEmpty()) { sb.append("\n── Attachments ──────────────────\n"); issue.attachmentUrls.forEach { a -> sb.append("• ${a.filename}  [${a.mimeType}]\n  ${a.url}\n") } }
-                descArea.text = sb.toString(); descArea.caretPosition = 0
+
+                // Build HTML description with subtasks, links, attachments already included from API
+                descPane.text = descHtml; descPane.caretPosition = 0
+
                 commentsModel.clear(); cs.takeLast(MAX_COMMENTS).reversed().forEach { commentsModel.addElement(it) }
                 worklogsModel.clear(); wls.takeLast(MAX_WORKLOGS).reversed().forEach { worklogsModel.addElement(it) }
                 openInBrowserBtn.isEnabled = true; copyLinkBtn.isEnabled = true; setEstimateBtn.isEnabled = true; changeStatusBtn.isEnabled = true
             }
+        }
+    }
+    private fun refreshFields(issueKey: String) {
+        fieldsArea.text = "Loading..."
+        runBg(onError = { runUi { fieldsArea.text = "Error: ${it.message}" } }) {
+            val fields = service<JiraService>().apiFromSettings().getAllIssueFields(issueKey)
+            val text = fields.joinToString("\n") { (k, v) -> "  $k:  $v" }
+            runUi { fieldsArea.text = text.ifBlank { "No fields" }; fieldsArea.caretPosition = 0 }
         }
     }
     private fun refreshComments(issueKey: String) {
