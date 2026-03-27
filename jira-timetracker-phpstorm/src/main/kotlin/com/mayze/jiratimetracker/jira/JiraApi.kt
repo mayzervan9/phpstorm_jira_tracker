@@ -86,7 +86,8 @@ class JiraApi(private val auth: JiraAuth) {
         maxResults: Int = 50,
         statuses: List<String> = emptyList(),
         onlyWithoutEstimate: Boolean = false,
-        scope: String = "My issues"
+        scope: String = "My issues",
+        activeSprintOnly: Boolean = false
     ): List<JiraIssue> {
         var jql = when (scope) {
             "Involved" -> "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) AND project = $projectKey"
@@ -98,6 +99,7 @@ class JiraApi(private val auth: JiraAuth) {
             jql += " AND status in ($statusList)"
         }
         if (onlyWithoutEstimate) jql += " AND originalEstimate is EMPTY"
+        if (activeSprintOnly) jql += " AND sprint in openSprints()"
         jql += " ORDER BY created DESC"
 
         val body = JSONObject()

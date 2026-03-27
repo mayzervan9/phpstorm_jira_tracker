@@ -47,6 +47,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
 
     private val statusFilterCombo = ComboBox(DefaultComboBoxModel(arrayOf("All statuses")))
     private val noEstimateCheck = JBCheckBox("No estimate only").apply { isOpaque = false }
+    private val activeSprintCheck = JBCheckBox("Active sprint", true).apply { isOpaque = false; toolTipText = "Show only issues from the active sprint" }
     private val scopeCombo = ComboBox(DefaultComboBoxModel(arrayOf("My issues", "Involved", "All project"))).apply { toolTipText = "Filter scope" }
     private val sortCombo = ComboBox(DefaultComboBoxModel(arrayOf("Date ↓", "Date ↑", "Priority ↓", "Priority ↑", "Key ↓", "Key ↑"))).apply { toolTipText = "Sort issues" }
     private val projectCombo = ComboBox<JiraProject>()
@@ -151,7 +152,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun buildSplitter() = JBSplitter(false, 0.28f).apply { firstComponent = buildLeft(); secondComponent = buildRight() }
     private fun buildLeft(): JPanel {
         val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER) }
-        val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(sortCombo); add(noEstimateCheck) }
+        val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(sortCombo); add(noEstimateCheck); add(activeSprintCheck) }
         return JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply { add(top, BorderLayout.NORTH); add(JPanel(BorderLayout()).apply { add(JPanel(BorderLayout()).apply { border=JBUI.Borders.empty(0,8,2,8); add(searchField, BorderLayout.CENTER) }, BorderLayout.NORTH); add(filters, BorderLayout.CENTER) }, BorderLayout.CENTER) }, BorderLayout.NORTH)
             add(JBScrollPane(issuesList).apply { border=JBUI.Borders.empty() }, BorderLayout.CENTER)
@@ -236,6 +237,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         projectCombo.addActionListener { onProjectSelected() }
         statusFilterCombo.addActionListener { loadIssues() }
         noEstimateCheck.addActionListener   { loadIssues() }
+        activeSprintCheck.addActionListener  { loadIssues() }
         scopeCombo.addActionListener        { loadIssues() }
         sortCombo.addActionListener         { filterIssues() }
         searchField.addDocumentListener(object : DocumentListener { override fun insertUpdate(e: DocumentEvent?)=filterIssues(); override fun removeUpdate(e: DocumentEvent?)=filterIssues(); override fun changedUpdate(e: DocumentEvent?)=filterIssues() })
@@ -286,7 +288,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         setStatus(true, "Loading...")
         runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
             val scope = scopeCombo.selectedItem as? String ?: "My issues"
-            val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statuses, noEstimateCheck.isSelected, scope)
+            val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statuses, noEstimateCheck.isSelected, scope, activeSprintCheck.isSelected)
             runUi { allIssues = issues; setStatus(false, "${p.key} - ${issues.size} issues"); filterIssues(); if (issuesModel.size() > 0) issuesList.selectedIndex = 0 }
         }
     }
