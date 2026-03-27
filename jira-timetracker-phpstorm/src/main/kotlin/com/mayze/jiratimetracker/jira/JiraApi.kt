@@ -95,7 +95,8 @@ class JiraApi(private val auth: JiraAuth) {
             else -> "assignee = currentUser() AND project = $projectKey"
         }
         if (statuses.isNotEmpty()) {
-            val statusList = statuses.joinToString(",") { "\"$it\"" }
+            // statuses are IDs — no quoting needed
+            val statusList = statuses.joinToString(",")
             jql += " AND status in ($statusList)"
         }
         if (onlyWithoutEstimate) jql += " AND originalEstimate is EMPTY"
@@ -275,7 +276,7 @@ class JiraApi(private val auth: JiraAuth) {
             sb.toString()
         } else ""
 
-        return "<html><body style='font-family:sans-serif;font-size:12px;padding:8px'>$html$attHtml</body></html>"
+        return "<html><body style='font-family:sans-serif;font-size:12px;padding:8px;background:transparent'>$html$attHtml</body></html>"
     }
 
     private fun adfToHtml(node: JSONObject): String {
@@ -383,24 +384,28 @@ class JiraApi(private val auth: JiraAuth) {
     }
 
     /** Returns all statuses available in the project */
-    fun getProjectStatuses(projectKey: String): List<String> {
+    /** Returns all statuses available in the project as name->id pairs */
+    fun getProjectStatuses(projectKey: String): List<Pair<String, String>> {
         val (code, text) = requestText("GET", "$base/rest/api/3/project/$projectKey/statuses", null)
         val raw = if (code == 200) text else {
             val (c2, t2) = requestText("GET", "$base/rest/api/2/project/$projectKey/statuses", null)
             if (c2 != 200) return emptyList()
             t2
         }
-        val statuses = mutableSetOf<String>()
+        val statuses = mutableMapOf<String, String>() // name -> id
         val types = try { JSONArray(raw) } catch (_: Throwable) { return emptyList() }
         for (i in 0 until types.length()) {
             val t = types.optJSONObject(i) ?: continue
             val ss = t.optJSONArray("statuses") ?: continue
             for (j in 0 until ss.length()) {
-                val s = ss.optJSONObject(j)?.optString("name") ?: continue
-                if (s.isNotBlank()) statuses.add(s)
+                val s = ss.optJSONObject(j) ?: continue
+                val name = s.optString("name")
+                val id = s.optString("id")
+                if (name.isBlank() || id.isBlank()) continue
+                statuses[name] = id
             }
         }
-        return statuses.sorted()
+        return statuses.entries.sortedBy { it.key }.map { it.key to it.value }
     }
 
     /** Fetches recent activity: issues updated in last N hours with changelog */

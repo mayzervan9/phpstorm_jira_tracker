@@ -56,6 +56,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val issuesList   = JBList(issuesModel).apply { selectionMode = ListSelectionModel.SINGLE_SELECTION; cellRenderer = JiraIssueRenderer(); emptyText.text = "Connect to load issues" }
     private var allIssues: List<JiraIssue> = emptyList()
     private var availableStatuses: List<String> = emptyList()
+    private var statusIdMap: Map<String, String> = emptyMap()
     private val issueTitleLabel = JBLabel("").apply { font = font.deriveFont(Font.BOLD, 13f); border = JBUI.Borders.empty(6,8,2,8) }
     private val issueStatusLabel = JBLabel("").apply { font = font.deriveFont(Font.PLAIN, 11f); foreground = gray() }
     private val estimateLabel    = JBLabel("").apply { font = font.deriveFont(Font.PLAIN, 11f); foreground = gray() }
@@ -65,7 +66,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val setEstimateBtn   = ib(AllIcons.Actions.Edit, "Set estimate")
     private val changeStatusBtn  = JButton("Status").apply { font = font.deriveFont(Font.PLAIN, 11f); icon = AllIcons.Actions.Forward }
     private val descPane = javax.swing.JEditorPane("text/html", "").apply {
-        isEditable = false; border = JBUI.Borders.empty(8)
+        isEditable = false; border = JBUI.Borders.empty(8); isOpaque = false
+        background = JBColor.PanelBackground
+        putClientProperty(javax.swing.JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
         addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) { try { Desktop.getDesktop().browse(e.url.toURI()) } catch (_: Throwable) {} } }
     }
     private val fieldsPane = javax.swing.JEditorPane("text/html", "").apply {
@@ -279,16 +282,28 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     }
     private fun onProjectSelected() {
         val p = projectCombo.selectedItem as? JiraProject ?: return
-        runBg(onError={}) { val s = try { service<JiraService>().apiFromSettings().getProjectStatuses(p.key) } catch (_: Throwable) { emptyList() }; runUi { availableStatuses = s; val m = statusFilterCombo.model as DefaultComboBoxModel; m.removeAllElements(); m.addElement("All statuses"); s.forEach { m.addElement(it) }; statusFilterCombo.selectedIndex = 0 } }
+        runBg(onError={}) {
+            val pairs = try { service<JiraService>().apiFromSettings().getProjectStatuses(p.key) } catch (_: Throwable) { emptyList() }
+            runUi {
+                statusIdMap = pairs.toMap()
+                availableStatuses = pairs.map { it.first }
+                val m = statusFilterCombo.model as DefaultComboBoxModel
+                m.removeAllElements()
+                m.addElement("All statuses")
+                pairs.forEach { m.addElement(it.first) }
+                statusFilterCombo.selectedIndex = 0
+            }
+        }
         loadIssues()
     }
     private fun loadIssues() {
         val p = projectCombo.selectedItem as? JiraProject ?: return
-        val sel = statusFilterCombo.selectedItem as? String; val statuses = if (sel == null || sel == "All statuses") emptyList() else listOf(sel)
+        val sel = statusFilterCombo.selectedItem as? String
+        val statusIds = if (sel == null || sel == "All statuses") emptyList() else listOfNotNull(statusIdMap[sel])
         setStatus(true, "Loading...")
         runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
             val scope = scopeCombo.selectedItem as? String ?: "My issues"
-            val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statuses, noEstimateCheck.isSelected, scope, activeSprintCheck.isSelected)
+            val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statusIds, noEstimateCheck.isSelected, scope, activeSprintCheck.isSelected)
             runUi { allIssues = issues; setStatus(false, "${p.key} - ${issues.size} issues"); filterIssues(); if (issuesModel.size() > 0) issuesList.selectedIndex = 0 }
         }
     }
