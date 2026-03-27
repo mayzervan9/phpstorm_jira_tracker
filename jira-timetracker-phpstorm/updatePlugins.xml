@@ -7,6 +7,6 @@
         <name>Jira Time Tracker</name>
         <description>Track time, manage worklogs, statuses and estimates directly from your IDE.</description>
         <vendor>Mayze</vendor>
-        <idea-version since-build="243" until-build="251.*"/>
+        <idea-version since-build="232"/>
     </plugin>
 </plugins>
