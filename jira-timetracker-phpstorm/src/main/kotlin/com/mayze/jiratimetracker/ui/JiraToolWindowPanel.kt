@@ -66,7 +66,10 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         isEditable = false; border = JBUI.Borders.empty(8)
         addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) { try { Desktop.getDesktop().browse(e.url.toURI()) } catch (_: Throwable) {} } }
     }
-    private val fieldsArea = roArea()
+    private val fieldsPane = javax.swing.JEditorPane("text/html", "").apply {
+        isEditable = false; border = JBUI.Borders.empty(4)
+        addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) { try { Desktop.getDesktop().browse(e.url.toURI()) } catch (_: Throwable) {} } }
+    }
     private val commentsModel = DefaultListModel<JiraComment>()
     private val commentsList  = JBList(commentsModel).apply { cellRenderer = CommentListCellRenderer(); selectionMode = ListSelectionModel.SINGLE_SELECTION }
     private val worklogsModel = DefaultListModel<JiraWorklog>()
@@ -140,7 +143,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             addTab("Description", AllIcons.Actions.Preview, sp(descPane))
             addTab("Comments", AllIcons.General.Balloon, sp(commentsList))
             addTab("Worklogs", AllIcons.Vcs.History, sp(worklogsList))
-            addTab("Fields", AllIcons.Nodes.DataTables, sp(fieldsArea))
+            addTab("Fields", AllIcons.Nodes.DataTables, sp(fieldsPane))
             addChangeListener { val key = currentIssue?.key ?: return@addChangeListener; when (selectedIndex) { 1 -> refreshComments(key); 2 -> refreshWorklogs(key); 3 -> refreshFields(key) } }
         }
         val actionTabs = JTabbedPane().apply { addTab("Tracker", AllIcons.Actions.Execute, buildTracker()); addTab("Comment", AllIcons.General.Add, buildCommentP()); addTab("MR/PR", AllIcons.Vcs.Merge, buildMrP()); addTab("Today", AllIcons.Vcs.History, buildTodayP()) }
@@ -258,11 +261,24 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         }
     }
     private fun refreshFields(issueKey: String) {
-        fieldsArea.text = "Loading..."
-        runBg(onError = { runUi { fieldsArea.text = "Error: ${it.message}" } }) {
+        fieldsPane.text = "<html><body><i>Loading...</i></body></html>"
+        runBg(onError = { runUi { fieldsPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
             val fields = service<JiraService>().apiFromSettings().getAllIssueFields(issueKey)
-            val text = fields.joinToString("\n") { (k, v) -> "  $k:  $v" }
-            runUi { fieldsArea.text = text.ifBlank { "No fields" }; fieldsArea.caretPosition = 0 }
+            val rows = fields.joinToString("") { (k, v) ->
+                if (v.isEmpty()) {
+                    // Separator row
+                    "<tr><td colspan='2' style='padding:8px 4px;font-weight:bold;color:#1B7F3A;border-bottom:2px solid #1B7F3A'>$k</td></tr>"
+                } else {
+                    val escaped = v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    val linked = escaped.replace(Regex("(https?://[^\\s<,)]+)")) { "<a href='${it.value}'>${it.value}</a>" }
+                    val wrapped = linked.replace("\n", "<br/>")
+                    "<tr><td style='padding:4px 8px;vertical-align:top;white-space:nowrap;color:#888888;font-weight:bold;border-bottom:1px solid #3C3F41;width:160px'>$k</td>" +
+                    "<td style='padding:4px 8px;border-bottom:1px solid #3C3F41;word-wrap:break-word'>$wrapped</td></tr>"
+                }
+            }
+            val html = "<html><body style='font-family:sans-serif;font-size:12px;margin:0;padding:0'>" +
+                "<table cellspacing='0' cellpadding='0' width='100%'>$rows</table></body></html>"
+            runUi { fieldsPane.text = html; fieldsPane.caretPosition = 0 }
         }
     }
     private fun refreshComments(issueKey: String) {

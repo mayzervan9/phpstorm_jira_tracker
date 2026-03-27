@@ -155,6 +155,21 @@ class JiraApi(private val auth: JiraAuth) {
 
     /** Returns ALL fields as raw key-value pairs for the Fields tab */
     fun getAllIssueFields(issueKey: String): List<Pair<String, String>> {
+        // First get field definitions for human-readable names
+        val fieldNames = mutableMapOf<String, String>()
+        try {
+            val (fc, ft) = requestText("GET", "$base/rest/api/3/field", null)
+            if (fc == 200) {
+                val arr = try { JSONArray(ft) } catch (_: Throwable) { null }
+                if (arr != null) for (i in 0 until arr.length()) {
+                    val f = arr.optJSONObject(i) ?: continue
+                    val id = f.optString("id").ifBlank { continue }
+                    val n = f.optString("name").ifBlank { null } ?: id
+                    fieldNames[id] = n
+                }
+            }
+        } catch (_: Throwable) {}
+
         val (code, json) = tryGetJson("$base/rest/api/3/issue/$issueKey")
         val raw = if (code == 200) json else {
             val (c2, j2) = tryGetJson("$base/rest/api/2/issue/$issueKey")
@@ -163,10 +178,21 @@ class JiraApi(private val auth: JiraAuth) {
         }
         val fields = raw.optJSONObject("fields") ?: return emptyList()
         val result = mutableListOf<Pair<String, String>>()
+        // Standard fields first, then custom
+        val standard = mutableListOf<Pair<String, String>>()
+        val custom = mutableListOf<Pair<String, String>>()
         for (key in fields.keys().asSequence().sorted()) {
             val v = fields.opt(key) ?: continue
             val display = fieldToDisplay(v)
-            if (display.isNotBlank()) result.add(key to display)
+            if (display.isBlank()) continue
+            val label = fieldNames[key] ?: key
+            if (key.startsWith("customfield_")) custom.add(label to display)
+            else standard.add(label to display)
+        }
+        result.addAll(standard)
+        if (custom.isNotEmpty()) {
+            result.add("── Custom Fields ──" to "")
+            result.addAll(custom)
         }
         return result
     }
@@ -177,21 +203,43 @@ class JiraApi(private val auth: JiraAuth) {
         is Number -> v.toString()
         is Boolean -> v.toString()
         is JSONObject -> {
-            // Common patterns: {name:"X"}, {displayName:"X"}, {value:"X"}, {key:"X"}
-            v.optString("name").ifBlank { null }
-                ?: v.optString("displayName").ifBlank { null }
-                ?: v.optString("value").ifBlank { null }
-                ?: v.optString("key").ifBlank { null }
-                ?: v.optString("emailAddress").ifBlank { null }
-                ?: jiraRichTextToPlain(v).ifBlank { v.toString().take(200) }
+            // User objects
+            val displayName = v.optString("displayName").ifBlank { null }
+            val name = v.optString("name").ifBlank { null }
+            val value = v.optString("value").ifBlank { null }
+            val key = v.optString("key").ifBlank { null }
+            val email = v.optString("emailAddress").ifBlank { null }
+            val self = v.optString("self").ifBlank { null }
+
+            when {
+                // User: show "Name (email)"
+                displayName != null && email != null -> "$displayName ($email)"
+                displayName != null -> displayName
+                // Status/Priority/Type: show name
+                name != null -> name
+                // Custom field with value
+                value != null -> value
+                // Sprint: parse name from string representation
+                v.has("name") && v.has("state") -> "${v.optString("name")} [${v.optString("state")}]"
+                // Rich text (ADF)
+                v.optString("type") == "doc" -> jiraRichTextToPlain(v)
+                // Fallback
+                key != null -> key
+                else -> v.toString().take(300)
+            }
         }
         is JSONArray -> {
+            if (v.length() == 0) return ""
             (0 until v.length()).mapNotNull { i ->
                 val item = v.opt(i)
-                fieldToDisplay(item).ifBlank { null }
+                when (item) {
+                    is String -> item
+                    is JSONObject -> fieldToDisplay(item).ifBlank { null }
+                    else -> item?.toString()?.ifBlank { null }
+                }
             }.joinToString(", ").ifBlank { "" }
         }
-        else -> v.toString().take(200)
+        else -> v.toString().take(300)
     }
 
     /** Returns description as HTML (from ADF or plain text) */
