@@ -16,7 +16,7 @@ gradle-8.10.2-bin.zip
 .DS_Store
 Thumbs.db
 
-# Empty dirs
-main/
-kotlin/
-resources/
+# Empty project dirs (not src/main)
+/main/
+/kotlin/
+/resources/

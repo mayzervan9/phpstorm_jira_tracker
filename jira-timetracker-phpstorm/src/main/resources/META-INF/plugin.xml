@@ -1,0 +1,47 @@
+<idea-plugin>
+    <id>com.mayze.jiratimetracker</id>
+    <name>Jira Time Tracker</name>
+    <vendor email="support@example.com" url="https://example.com">Mayze</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <resource-bundle>messages.JiraTimeTrackerBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- App-level services -->
+        <applicationService serviceImplementation="com.mayze.jiratimetracker.settings.JiraProfilesState"/>
+        <applicationService serviceImplementation="com.mayze.jiratimetracker.services.JiraService"/>
+
+        <!-- Project-level service -->
+        <projectService serviceImplementation="com.mayze.jiratimetracker.services.TimeTrackerService"/>
+
+        <!-- Tool window -->
+        <toolWindow id="Jira"
+                    icon="/icons/jira.svg"
+                    anchor="right"
+                    factoryClass="com.mayze.jiratimetracker.ui.JiraToolWindowFactory"/>
+
+        <!-- Status bar -->
+        <statusBarWidgetFactory implementation="com.mayze.jiratimetracker.ui.JiraTrackingStatusBarWidgetFactory"
+                                order="last"/>
+
+        <!-- Settings page -->
+        <applicationConfigurable parentId="tools"
+                                 id="com.mayze.jiratimetracker.settings"
+                                 displayName="Jira Time Tracker"
+                                 implementationClass="com.mayze.jiratimetracker.settings.JiraSettingsConfigurable"/>
+
+        <!-- Notifications -->
+        <notificationGroup id="Jira Time Tracker" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <action id="com.mayze.jiratimetracker.actions.ToggleTrackingAction"
+                class="com.mayze.jiratimetracker.actions.ToggleTrackingAction"
+                text="Jira Start/Stop"
+                description="Toggle Jira time tracking for the active issue">
+            <add-to-group group-id="MainToolbarRight" anchor="last"/>
+        </action>
+    </actions>
+
+</idea-plugin>
