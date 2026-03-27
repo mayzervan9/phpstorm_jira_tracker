@@ -51,9 +51,9 @@ class TransitionPickerDialog(
 
     override fun createCenterPanel(): JComponent {
         val currentLabel = if (!currentStatus.isNullOrBlank())
-            "<html><small>Current status: <b>$currentStatus</b></small></html>"
+            "Current status: $currentStatus"
         else
-            "<html><small>Only transitions allowed by your workflow are shown.</small></html>"
+            "Only transitions allowed by your workflow are shown."
 
         val hint = JBLabel(currentLabel).apply { border = JBUI.Borders.emptyBottom(8) }
 
@@ -76,16 +76,15 @@ class TransitionPickerDialog(
             val t = value as? JiraTransition ?: return this
             border = JBUI.Borders.empty(6, 10)
 
-            val dotColor = when (t.toStatusCategory) {
-                "done"          -> "#1B7F3A"
-                "indeterminate" -> "#0052CC"
-                else            -> "#888888"
+            val dot = when (t.toStatusCategory) {
+                "done"          -> "🟢"
+                "indeterminate" -> "🔵"
+                else            -> "⚪"
             }
-            val dot = "<span style='color:$dotColor; font-size:14px'>●</span>"
             val isCurrent = !currentStatus.isNullOrBlank() && t.name.equals(currentStatus, ignoreCase = true)
-            val marker = if (isCurrent) " <span style='color:#888888'>(current)</span>" else ""
-            text = "<html>$dot &nbsp;${t.name}$marker</html>"
-            font = if (isCurrent) font.deriveFont(Font.BOLD, 12f) else font.deriveFont(Font.PLAIN, 12f)
+            val marker = if (isCurrent) " (current)" else ""
+            text = "$dot  ${t.name}$marker"
+            font = if (isCurrent) font.deriveFont(Font.BOLD, 13f) else font.deriveFont(Font.PLAIN, 13f)
 
             if (!isSelected) {
                 background = JBColor(Color(0xF8F8F8), Color(0x2B2D30))
