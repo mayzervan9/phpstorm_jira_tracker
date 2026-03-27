@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugins>
+    <plugin
+        id="com.mayze.jiratimetracker"
+        url="https://github.com/YOUR_USERNAME/jira-timetracker-phpstorm/releases/download/v0.1.0/jira-timetracker-phpstorm-0.1.0.zip"
+        version="0.1.0">
+        <name>Jira Time Tracker</name>
+        <description>Track time, manage worklogs, statuses and estimates directly from your IDE.</description>
+        <vendor>Mayze</vendor>
+        <idea-version since-build="243" until-build="251.*"/>
+    </plugin>
+</plugins>
