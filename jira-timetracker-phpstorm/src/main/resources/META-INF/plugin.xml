@@ -1,6 +1,6 @@
 <idea-plugin>
     <id>com.mayze.jiratimetracker</id>
-    <name>Jira Time Tracker</name>
+    <name>YeDu Jira Tracker (Mayzer)</name>
     <vendor email="support@example.com" url="https://example.com">Mayze</vendor>
 
     <depends>com.intellij.modules.platform</depends>
@@ -28,11 +28,11 @@
         <!-- Settings page -->
         <applicationConfigurable parentId="tools"
                                  id="com.mayze.jiratimetracker.settings"
-                                 displayName="Jira Time Tracker"
+                                 displayName="YeDu Jira Tracker (Mayzer)"
                                  implementationClass="com.mayze.jiratimetracker.settings.JiraSettingsConfigurable"/>
 
         <!-- Notifications -->
-        <notificationGroup id="Jira Time Tracker" displayType="BALLOON"/>
+        <notificationGroup id="YeDu Jira Tracker" displayType="BALLOON"/>
     </extensions>
 
     <actions>

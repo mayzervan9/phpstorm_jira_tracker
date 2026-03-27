@@ -107,7 +107,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             add(JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS); isOpaque = false; border = JBUI.Borders.empty(40,32)
                 add(JBLabel(AllIcons.Plugins.PluginLogo).apply { alignmentX = CENTER_ALIGNMENT })
-                add(JBLabel("Jira Time Tracker").apply { font = font.deriveFont(Font.BOLD, 18f); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.emptyTop(16) })
+                add(JBLabel("YeDu Jira Tracker").apply { font = font.deriveFont(Font.BOLD, 18f); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.emptyTop(16) })
                 add(JBLabel("<html><div style='text-align:center;width:260px'>Track time, manage worklogs and statuses from your IDE.</div></html>").apply { foreground = gray(); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.empty(10,0,24,0) })
                 btn.alignmentX = CENTER_ALIGNMENT; add(btn)
             }, BorderLayout.CENTER)
