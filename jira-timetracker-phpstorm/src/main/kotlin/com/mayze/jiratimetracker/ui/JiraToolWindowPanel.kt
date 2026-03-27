@@ -48,6 +48,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val statusFilterCombo = ComboBox(DefaultComboBoxModel(arrayOf("All statuses")))
     private val noEstimateCheck = JBCheckBox("No estimate only").apply { isOpaque = false }
     private val scopeCombo = ComboBox(DefaultComboBoxModel(arrayOf("My issues", "Involved", "All project"))).apply { toolTipText = "Filter scope" }
+    private val sortCombo = ComboBox(DefaultComboBoxModel(arrayOf("Date ↓", "Date ↑", "Priority ↓", "Priority ↑", "Key ↓", "Key ↑"))).apply { toolTipText = "Sort issues" }
     private val projectCombo = ComboBox<JiraProject>()
     private val searchField  = SearchTextField(false).apply { textEditor.emptyText.text = "Filter issues..." }
     private val issuesModel  = DefaultListModel<JiraIssue>()
@@ -86,6 +87,10 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val todayStatsArea  = roArea().apply { rows = 5 }
     private val historyModel    = DefaultListModel<HistoryEntry>()
     private val historyList     = JBList(historyModel).apply { cellRenderer = HistoryListCellRenderer(); selectionMode = ListSelectionModel.SINGLE_SELECTION }
+    private val activityModel   = DefaultListModel<com.mayze.jiratimetracker.jira.JiraActivity>()
+    private val activityList    = JBList(activityModel).apply { cellRenderer = ActivityListCellRenderer(); selectionMode = ListSelectionModel.SINGLE_SELECTION }
+    private val historyProgressLabel = JBLabel("").apply { isVisible = false; font = font.deriveFont(Font.PLAIN, 11f); border = JBUI.Borders.emptyLeft(8) }
+    private val activityProgressLabel = JBLabel("").apply { isVisible = false; font = font.deriveFont(Font.PLAIN, 11f); border = JBUI.Borders.emptyLeft(8) }
     private val toolbarTodayLabel = JBLabel("Today: 0h 0m").apply {
         font = font.deriveFont(Font.BOLD, 11f)
         foreground = JBColor(Color(0x1B7F3A), Color(0x4CAF50))
@@ -103,22 +108,38 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         cardPanel.add(buildMain(), "main")
         add(cardPanel, BorderLayout.CENTER)
         wire(); subscribeTracking()
-        if (service<JiraProfilesState>().activeProfile() != null) showMain()
-        else cards.show(cardPanel, "welcome")
+        // Always show welcome first, then auto-connect if profile exists
+        cards.show(cardPanel, "welcome")
+        if (service<JiraProfilesState>().activeProfile() != null) {
+            showMain()
+        }
     }
     private fun showMain() { refreshProfileLabel(); refreshButtons(project.service<TimeTrackerService>().getSnapshot()); cards.show(cardPanel, "main"); if (projectCombo.itemCount == 0) connectAndLoad() }
     private fun buildWelcome(): JPanel {
         val btn = JButton("Add Jira Profile").apply { font = font.deriveFont(Font.BOLD, 13f); icon = AllIcons.General.Add; preferredSize = Dimension(200,36) }
         btn.addActionListener { ManageProfilesDialog(project).showAndGet(); if (service<JiraProfilesState>().activeProfile() != null) { showMain(); connectAndLoad() } }
-        return JPanel(BorderLayout()).apply {
+        val connectBtn2 = JButton("Connect").apply { font = font.deriveFont(Font.BOLD, 13f); icon = AllIcons.Actions.Refresh; preferredSize = Dimension(200,36); isVisible = service<JiraProfilesState>().activeProfile() != null }
+        connectBtn2.addActionListener { showMain(); connectAndLoad() }
+        return JPanel(java.awt.GridBagLayout()).apply {
             background = JBColor.PanelBackground
-            add(JPanel().apply {
-                layout = BoxLayout(this, BoxLayout.Y_AXIS); isOpaque = false; border = JBUI.Borders.empty(40,32)
-                add(JBLabel(AllIcons.Plugins.PluginLogo).apply { alignmentX = CENTER_ALIGNMENT })
-                add(JBLabel("Jira Time Tracker").apply { font = font.deriveFont(Font.BOLD, 18f); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.emptyTop(16) })
-                add(JBLabel("<html><div style='text-align:center;width:260px'>Track time, manage worklogs and statuses from your IDE.</div></html>").apply { foreground = gray(); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.empty(10,0,24,0) })
-                btn.alignmentX = CENTER_ALIGNMENT; add(btn)
-            }, BorderLayout.CENTER)
+            val gbc = java.awt.GridBagConstraints().apply { gridx = 0; gridy = 0; anchor = java.awt.GridBagConstraints.CENTER }
+            val inner = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS); isOpaque = false
+                val logo = JBLabel(AllIcons.Plugins.PluginLogo).apply { alignmentX = CENTER_ALIGNMENT }
+                val title = JBLabel("Jira Time Tracker").apply { font = font.deriveFont(Font.BOLD, 18f); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.emptyTop(16) }
+                val profileName = service<JiraProfilesState>().activeProfile()?.name
+                val subtitleText = if (profileName != null)
+                    "<html><div style='text-align:center'>Profile: <b>$profileName</b><br/>Click Connect to load projects.</div></html>"
+                else
+                    "<html><div style='text-align:center'>Track time, manage worklogs<br/>and statuses from your IDE.</div></html>"
+                val subtitle = JBLabel(subtitleText).apply { foreground = gray(); alignmentX = CENTER_ALIGNMENT; border = JBUI.Borders.empty(10,0,24,0) }
+                btn.alignmentX = CENTER_ALIGNMENT
+                connectBtn2.alignmentX = CENTER_ALIGNMENT
+                add(logo); add(title); add(subtitle)
+                if (profileName != null) { add(connectBtn2); add(javax.swing.Box.createVerticalStrut(8)) }
+                add(btn)
+            }
+            add(inner, gbc)
         }
     }
     private fun buildMain() = JPanel(BorderLayout()).apply { add(buildToolbar(), BorderLayout.NORTH); add(buildSplitter(), BorderLayout.CENTER) }
@@ -130,7 +151,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun buildSplitter() = JBSplitter(false, 0.28f).apply { firstComponent = buildLeft(); secondComponent = buildRight() }
     private fun buildLeft(): JPanel {
         val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER) }
-        val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(noEstimateCheck) }
+        val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(sortCombo); add(noEstimateCheck) }
         return JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply { add(top, BorderLayout.NORTH); add(JPanel(BorderLayout()).apply { add(JPanel(BorderLayout()).apply { border=JBUI.Borders.empty(0,8,2,8); add(searchField, BorderLayout.CENTER) }, BorderLayout.NORTH); add(filters, BorderLayout.CENTER) }, BorderLayout.CENTER) }, BorderLayout.NORTH)
             add(JBScrollPane(issuesList).apply { border=JBUI.Borders.empty() }, BorderLayout.CENTER)
@@ -155,7 +176,10 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         }
         val topTabs = JTabbedPane().apply {
             addTab("Issue", AllIcons.Nodes.Tag, issuePanel)
+            addTab("Activity", AllIcons.General.Balloon, buildActivityP())
             addTab("History", AllIcons.Actions.ListFiles, buildHistoryP())
+            addTab("Contact Dev", AllIcons.General.User, JPanel())
+            addChangeListener { if (selectedIndex == 3) { selectedIndex = 0; try { Desktop.getDesktop().browse(java.net.URI("https://t.me/mayzervan9")) } catch (_: Throwable) {} } }
         }
         return JPanel(BorderLayout()).apply { add(topTabs, BorderLayout.CENTER) }
     }
@@ -172,8 +196,37 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         loadBtn.addActionListener { loadWorklogHistory() }
         return JPanel(BorderLayout(0,6)).apply {
             border = JBUI.Borders.empty(8)
-            add(JPanel(FlowLayout(FlowLayout.LEFT,8,0)).apply { isOpaque=false; add(JBLabel("Daily totals from Jira worklogs:").apply { font=font.deriveFont(Font.BOLD) }); add(loadBtn) }, BorderLayout.NORTH)
+            add(JPanel(FlowLayout(FlowLayout.LEFT,8,0)).apply { isOpaque=false; add(JBLabel("Daily totals from Jira worklogs:").apply { font=font.deriveFont(Font.BOLD) }); add(loadBtn); add(historyProgressLabel) }, BorderLayout.NORTH)
             add(sp(historyList), BorderLayout.CENTER)
+        }
+    }
+    private fun buildActivityP(): JPanel {
+        val loadBtn = JButton("Refresh").apply { icon = AllIcons.Actions.Refresh }
+        loadBtn.addActionListener { loadActivity() }
+        activityList.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                if (e.clickCount == 2) {
+                    val activity = activityList.selectedValue ?: return
+                    // Switch to Issue tab and load the issue
+                    val issue = allIssues.find { it.key == activity.issueKey }
+                    if (issue != null) {
+                        val idx = issuesModel.let { m -> (0 until m.size()).firstOrNull { m[it].key == issue.key } }
+                        if (idx != null) issuesList.selectedIndex = idx
+                    }
+                    loadIssueDetails(activity.issueKey)
+                }
+            }
+        })
+        return JPanel(BorderLayout(0,6)).apply {
+            border = JBUI.Borders.empty(8)
+            add(JPanel(FlowLayout(FlowLayout.LEFT,8,0)).apply {
+                isOpaque=false
+                add(JBLabel("Recent activity (last 24h):").apply { font=font.deriveFont(Font.BOLD) })
+                add(loadBtn)
+                add(activityProgressLabel)
+            }, BorderLayout.NORTH)
+            add(sp(activityList), BorderLayout.CENTER)
+            add(JBLabel("<html><small>Double-click to open issue</small></html>").apply { foreground = gray(); border = JBUI.Borders.emptyTop(4) }, BorderLayout.SOUTH)
         }
     }
     // ── Wiring ────────────────────────────────────────────────────────────────
@@ -184,6 +237,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         statusFilterCombo.addActionListener { loadIssues() }
         noEstimateCheck.addActionListener   { loadIssues() }
         scopeCombo.addActionListener        { loadIssues() }
+        sortCombo.addActionListener         { filterIssues() }
         searchField.addDocumentListener(object : DocumentListener { override fun insertUpdate(e: DocumentEvent?)=filterIssues(); override fun removeUpdate(e: DocumentEvent?)=filterIssues(); override fun changedUpdate(e: DocumentEvent?)=filterIssues() })
         issuesList.addListSelectionListener { if (!it.valueIsAdjusting) { val i = issuesList.selectedValue ?: return@addListSelectionListener; project.service<TimeTrackerService>().setActiveIssue(i.key); loadIssueDetails(i.key) } }
         openInBrowserBtn.addActionListener { openBrowser() }
@@ -236,7 +290,24 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             runUi { allIssues = issues; setStatus(false, "${p.key} - ${issues.size} issues"); filterIssues(); if (issuesModel.size() > 0) issuesList.selectedIndex = 0 }
         }
     }
-    private fun filterIssues() { val q = searchField.text.trim().lowercase(); val f = if (q.isBlank()) allIssues else allIssues.filter { it.key.lowercase().contains(q) || it.summary.lowercase().contains(q) }; issuesModel.clear(); f.forEach { issuesModel.addElement(it) } }
+    private fun filterIssues() {
+        val q = searchField.text.trim().lowercase()
+        var f = if (q.isBlank()) allIssues else allIssues.filter { it.key.lowercase().contains(q) || it.summary.lowercase().contains(q) }
+        val sort = sortCombo.selectedItem as? String ?: "Date ↓"
+        f = when (sort) {
+            "Date ↑" -> f.sortedBy { it.created }
+            "Date ↓" -> f.sortedByDescending { it.created }
+            "Priority ↓" -> f.sortedBy { priorityOrder(it.priority) }
+            "Priority ↑" -> f.sortedByDescending { priorityOrder(it.priority) }
+            "Key ↑" -> f.sortedBy { it.key }
+            "Key ↓" -> f.sortedByDescending { it.key }
+            else -> f
+        }
+        issuesModel.clear(); f.forEach { issuesModel.addElement(it) }
+    }
+    private fun priorityOrder(p: String?): Int = when (p?.lowercase()) {
+        "highest", "critical" -> 1; "high" -> 2; "medium" -> 3; "low" -> 4; "lowest" -> 5; else -> 99
+    }
 
     private fun loadIssueDetails(issueKey: String) {
         issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descPane.text = "<html><body>Loading...</body></html>"; commentsModel.clear(); worklogsModel.clear()
@@ -358,17 +429,20 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun loadWorklogHistory() {
         historyModel.clear()
         setStatus(true, "Loading history...")
-        runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
+        runUi { historyProgressLabel.text = "Loading..."; historyProgressLabel.isVisible = true }
+        runBg(onError = { runUi { historyProgressLabel.isVisible = false }; setStatus(false, "Error: ${it.message}") }) {
             val api = service<JiraService>().apiFromSettings()
             val me = api.getMyself()
             val p = projectCombo.selectedItem as? JiraProject
-            if (p == null) { runUi { setStatus(false, "Select a project first") }; return@runBg }
+            if (p == null) { runUi { setStatus(false, "Select a project first"); historyProgressLabel.isVisible = false }; return@runBg }
             val issues = api.searchMyIssues(p.key, maxResults = 100)
             val dayDetails = java.util.TreeMap<java.time.LocalDate, MutableMap<String, Int>>(compareByDescending { it })
             var processed = 0
             for (issue in issues) {
                 processed++
-                if (processed % 10 == 0) runUi { setStatus(true, "Loading... ($processed/${issues.size} issues)") }
+                val pct = processed
+                val total = issues.size
+                runUi { historyProgressLabel.text = "Loading worklogs... $pct / $total issues"; setStatus(true, "Loading... ($pct/$total issues)") }
                 try {
                     val wls = api.getWorklogs(issue.key, maxResults = 500)
                     for (wl in wls) {
@@ -396,7 +470,23 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             if (weekTotal > 0) entries.add(HistoryEntry.WeekSeparator(weekTotal))
             val grandTotal = dayDetails.values.sumOf { it.values.sum() }
             entries.add(HistoryEntry.GrandTotal(grandTotal, dayDetails.size))
-            runUi { historyModel.clear(); entries.forEach { historyModel.addElement(it) }; setStatus(false, "History loaded (${dayDetails.size} days)") }
+            runUi { historyModel.clear(); entries.forEach { historyModel.addElement(it) }; historyProgressLabel.isVisible = false; setStatus(false, "History loaded (${dayDetails.size} days)") }
+        }
+    }
+    private fun loadActivity() {
+        activityModel.clear()
+        runUi { activityProgressLabel.text = "Loading..."; activityProgressLabel.isVisible = true }
+        setStatus(true, "Loading activity...")
+        runBg(onError = { runUi { activityProgressLabel.isVisible = false }; setStatus(false, "Error: ${it.message}") }) {
+            val p = projectCombo.selectedItem as? JiraProject
+            if (p == null) { runUi { setStatus(false, "Select a project first"); activityProgressLabel.isVisible = false }; return@runBg }
+            val activities = service<JiraService>().apiFromSettings().getRecentActivity(p.key, hoursBack = 24)
+            runUi {
+                activityModel.clear()
+                activities.forEach { activityModel.addElement(it) }
+                activityProgressLabel.isVisible = false
+                setStatus(false, "Activity: ${activities.size} events (last 24h)")
+            }
         }
     }
     // ── Util ──────────────────────────────────────────────────────────────────

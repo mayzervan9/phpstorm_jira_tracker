@@ -87,3 +87,12 @@ data class JiraUser(
     val email: String?,
     val displayName: String?
 )
+
+data class JiraActivity(
+    val issueKey: String,
+    val summary: String,
+    val authorName: String,
+    val type: String,       // "comment", "status", "assignee", "worklog", "updated"
+    val detail: String,
+    val timestamp: java.time.OffsetDateTime?
+)

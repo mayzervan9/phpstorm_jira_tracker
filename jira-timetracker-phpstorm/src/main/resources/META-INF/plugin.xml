@@ -22,14 +22,15 @@
                     factoryClass="com.mayze.jiratimetracker.ui.JiraToolWindowFactory"/>
 
         <!-- Status bar -->
-        <statusBarWidgetFactory implementation="com.mayze.jiratimetracker.ui.JiraTrackingStatusBarWidgetFactory"
+        <statusBarWidgetFactory id="jira.tracking.status.widget"
+                                implementation="com.mayze.jiratimetracker.ui.JiraTrackingStatusBarWidgetFactory"
                                 order="last"/>
 
         <!-- Settings page -->
         <applicationConfigurable parentId="tools"
+                                 instance="com.mayze.jiratimetracker.settings.JiraSettingsConfigurable"
                                  id="com.mayze.jiratimetracker.settings"
-                                 displayName="Jira Time Tracker"
-                                 implementationClass="com.mayze.jiratimetracker.settings.JiraSettingsConfigurable"/>
+                                 displayName="Jira Time Tracker"/>
 
         <!-- Notifications -->
         <notificationGroup id="Jira Time Tracker" displayType="BALLOON"/>

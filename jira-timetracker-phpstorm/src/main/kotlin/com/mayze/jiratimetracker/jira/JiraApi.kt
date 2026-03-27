@@ -401,6 +401,64 @@ class JiraApi(private val auth: JiraAuth) {
         return statuses.sorted()
     }
 
+    /** Fetches recent activity: issues updated in last N hours with changelog */
+    fun getRecentActivity(projectKey: String, hoursBack: Int = 24): List<JiraActivity> {
+        val jql = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) AND project = $projectKey AND updated >= -${hoursBack}h ORDER BY updated DESC"
+        val body = JSONObject()
+            .put("jql", jql)
+            .put("maxResults", 50)
+            .put("fields", JSONArray().put("summary").put("comment").put("status").put("updated"))
+            .put("expand", "changelog")
+
+        val (code, json) = tryPostJson("$base/rest/api/3/search", body)
+        val issues = if (code == 200) json.optJSONArray("issues") ?: JSONArray()
+        else {
+            val (c2, j2) = tryPostJson("$base/rest/api/2/search", body)
+            if (c2 != 200) return emptyList()
+            j2.optJSONArray("issues") ?: JSONArray()
+        }
+
+        val activities = mutableListOf<JiraActivity>()
+        for (i in 0 until issues.length()) {
+            val issue = issues.optJSONObject(i) ?: continue
+            val key = issue.optString("key")
+            val fields = issue.optJSONObject("fields") ?: JSONObject()
+            val summary = fields.optString("summary")
+
+            // Parse changelog
+            val changelog = issue.optJSONObject("changelog")
+            val histories = changelog?.optJSONArray("histories")
+            if (histories != null) {
+                for (h in 0 until histories.length()) {
+                    val history = histories.optJSONObject(h) ?: continue
+                    val author = history.optJSONObject("author")?.optString("displayName") ?: "unknown"
+                    val created = history.optString("created").let { try { java.time.OffsetDateTime.parse(it) } catch (_: Throwable) { null } }
+                    val items = history.optJSONArray("items") ?: continue
+                    for (j in 0 until items.length()) {
+                        val item = items.optJSONObject(j) ?: continue
+                        val field = item.optString("field")
+                        val from = item.optString("fromString")
+                        val to = item.optString("toString")
+                        val type = when (field) {
+                            "status" -> "status"
+                            "assignee" -> "assignee"
+                            "Comment" -> "comment"
+                            else -> "updated"
+                        }
+                        val detail = when (field) {
+                            "status" -> "$from → $to"
+                            "assignee" -> "→ $to"
+                            "Comment" -> to.take(120)
+                            else -> "$field: $to".take(120)
+                        }
+                        activities.add(JiraActivity(key, summary, author, type, detail, created))
+                    }
+                }
+            }
+        }
+        return activities.sortedByDescending { it.timestamp }
+    }
+
     fun getComments(issueKey: String, maxResults: Int = 100): List<JiraComment> {
         val (code, json) = tryGetJson("$base/rest/api/3/issue/$issueKey/comment?maxResults=$maxResults")
         if (code != 200) {
