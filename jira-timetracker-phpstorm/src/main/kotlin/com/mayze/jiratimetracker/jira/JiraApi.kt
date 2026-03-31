@@ -58,40 +58,30 @@ class JiraApi(private val auth: JiraAuth) {
     }
 
     fun getProjects(): List<JiraProject> {
-        val allProjects = mutableListOf<JiraProject>()
-
-        // Try paginated endpoints first
+        // Try paginated search endpoint (Cloud)
         for (ver in listOf("3", "2")) {
-            val (code, json) = tryGetJson("$base/rest/api/$ver/project/search?maxResults=1000")
-            if (code == 200) {
-                val values = json.optJSONArray("values")
-                if (values != null && values.length() > 0) {
-                    return values.map { JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name")) }
+            try {
+                val (code, json) = tryGetJson("$base/rest/api/$ver/project/search?maxResults=1000")
+                if (code == 200) {
+                    val values = json.optJSONArray("values")
+                    if (values != null && values.length() > 0) {
+                        return values.map { JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name")) }
+                    }
                 }
-            }
+            } catch (_: Throwable) {}
         }
 
-        // Try plain array endpoints
-        for (ver in listOf("3", "2")) {
-            val (code, text) = requestText("GET", "$base/rest/api/$ver/project", null)
-            if (code == 200 && text.trimStart().startsWith("[")) {
-                val arr = try { JSONArray(text) } catch (_: Throwable) { null }
-                if (arr != null && arr.length() > 0) {
+        // Try plain array endpoint (Server/DC)
+        for (ver in listOf("2", "3", "latest")) {
+            try {
+                val (code, arr) = tryGetJsonArray("$base/rest/api/$ver/project")
+                if (code == 200 && arr.length() > 0) {
                     return arr.map { JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name")) }
                 }
-            }
+            } catch (_: Throwable) {}
         }
 
-        // Last resort — try latest endpoint
-        val (code, text) = requestText("GET", "$base/rest/api/latest/project", null)
-        if (code == 200 && text.trimStart().startsWith("[")) {
-            val arr = try { JSONArray(text) } catch (_: Throwable) { null }
-            if (arr != null && arr.length() > 0) {
-                return arr.map { JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name")) }
-            }
-        }
-
-        return emptyList() // No projects found — don't crash
+        return emptyList()
     }
 
     fun searchMyIssues(
