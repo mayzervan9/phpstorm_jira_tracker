@@ -314,23 +314,29 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             val now = System.currentTimeMillis()
             if (myProjectKeysCache.isEmpty() || now - myProjectsCacheTime > 15 * 60 * 1000) {
                 runUi { setStatus(true, "Finding your projects...") }
-                try {
-                    val jql = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) ORDER BY updated DESC"
-                    val body = org.json.JSONObject().put("jql", jql).put("maxResults", 200)
-                        .put("fields", org.json.JSONArray().put("project"))
-                    val (code, json) = api.searchPost(body)
-                    if (code == 200) {
-                        val issues = json.optJSONArray("issues") ?: org.json.JSONArray()
-                        val keys = mutableSetOf<String>()
-                        for (i in 0 until issues.length()) {
-                            val f = issues.optJSONObject(i)?.optJSONObject("fields")
-                            val pk = f?.optJSONObject("project")?.optString("key")
-                            if (!pk.isNullOrBlank()) keys.add(pk)
+                val keys = mutableSetOf<String>()
+                // Try full JQL first, then simpler fallback
+                for (jql in listOf(
+                    "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) ORDER BY updated DESC",
+                    "(assignee = currentUser() OR reporter = currentUser()) ORDER BY updated DESC",
+                    "assignee = currentUser() ORDER BY updated DESC"
+                )) {
+                    try {
+                        val body = org.json.JSONObject().put("jql", jql).put("maxResults", 200)
+                            .put("fields", org.json.JSONArray().put("project"))
+                        val (code, json) = api.searchPost(body)
+                        if (code == 200) {
+                            val issues = json.optJSONArray("issues") ?: org.json.JSONArray()
+                            for (i in 0 until issues.length()) {
+                                val pk = issues.optJSONObject(i)?.optJSONObject("fields")?.optJSONObject("project")?.optString("key")
+                                if (!pk.isNullOrBlank()) keys.add(pk)
+                            }
+                            if (keys.isNotEmpty()) break
                         }
-                        myProjectKeysCache = keys
-                        myProjectsCacheTime = now
-                    }
-                } catch (_: Throwable) {}
+                    } catch (_: Throwable) {}
+                }
+                myProjectKeysCache = keys
+                myProjectsCacheTime = now
             }
 
             runUi {
