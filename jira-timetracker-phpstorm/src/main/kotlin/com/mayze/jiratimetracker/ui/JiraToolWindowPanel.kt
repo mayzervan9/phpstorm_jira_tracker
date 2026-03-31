@@ -83,6 +83,11 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val commentsList  = JBList(commentsModel).apply { cellRenderer = CommentListCellRenderer(); selectionMode = ListSelectionModel.SINGLE_SELECTION }
     private val worklogsModel = DefaultListModel<JiraWorklog>()
     private val worklogsList  = JBList(worklogsModel).apply { cellRenderer = WorklogListCellRenderer(); selectionMode = ListSelectionModel.SINGLE_SELECTION }
+    private val movementPane = javax.swing.JEditorPane("text/html", "").apply {
+        isEditable = false; border = JBUI.Borders.empty(8); isOpaque = false
+        background = JBColor.PanelBackground
+        putClientProperty(javax.swing.JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+    }
     private val commentInput  = JBTextArea(3,0).apply { lineWrap=true; wrapStyleWord=true; border=JBUI.Borders.empty(6) }
     private val addCommentBtn = JButton("Add Comment").apply { icon = AllIcons.General.Add }
     private val mrInput       = JBTextArea(2,0).apply { lineWrap=true; wrapStyleWord=true; border=JBUI.Borders.empty(6) }
@@ -172,8 +177,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             addTab("Description", AllIcons.Actions.Preview, sp(descPane))
             addTab("Comments", AllIcons.General.Balloon, sp(commentsList))
             addTab("Worklogs", AllIcons.Vcs.History, sp(worklogsList))
+            addTab("Movement", AllIcons.Actions.Forward, sp(movementPane))
             addTab("Fields", AllIcons.Nodes.DataTables, sp(fieldsPane))
-            addChangeListener { val key = currentIssue?.key ?: return@addChangeListener; when (selectedIndex) { 1 -> refreshComments(key); 2 -> refreshWorklogs(key); 3 -> refreshFields(key) } }
+            addChangeListener { val key = currentIssue?.key ?: return@addChangeListener; when (selectedIndex) { 1 -> refreshComments(key); 2 -> refreshWorklogs(key); 3 -> refreshMovement(key); 4 -> refreshFields(key) } }
         }
         val actionTabs = JTabbedPane().apply { addTab("Tracker", AllIcons.Actions.Execute, buildTracker()); addTab("Comment", AllIcons.General.Add, buildCommentP()); addTab("MR/PR", AllIcons.Vcs.Merge, buildMrP()); addTab("Today", AllIcons.Vcs.History, buildTodayP()) }
         val issuePanel = JPanel(BorderLayout()).apply {
@@ -269,7 +275,23 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     }
 
     // ── Actions ───────────────────────────────────────────────────────────────
-    private fun openProfiles() { val d = ManageProfilesDialog(project); d.showAndGet(); if (service<JiraProfilesState>().activeProfile() != null) { showMain(); connectAndLoad() } }
+    private fun openProfiles() {
+        val d = ManageProfilesDialog(project); d.showAndGet()
+        if (service<JiraProfilesState>().activeProfile() != null) { showMain(); connectAndLoad() }
+        else resetToWelcome()
+    }
+
+    private fun resetToWelcome() {
+        projectCombo.removeAllItems()
+        issuesModel.clear()
+        allProjectsCache = emptyList()
+        myProjectKeysCache = emptySet()
+        currentIssue = null
+        commentsModel.clear()
+        worklogsModel.clear()
+        activityModel.clear()
+        cards.show(cardPanel, "welcome")
+    }
     private fun onStarted(issueKey: String) { runBg(onError={}) { val ts = try { service<JiraService>().apiFromSettings().getTransitions(issueKey) } catch (_: Throwable) { return@runBg }; if (ts.isEmpty()) return@runBg; val cs = currentIssue?.status; runUi { val d = TransitionPickerDialog(project, issueKey, ts, cs); d.title = "Tracking started — move \"$issueKey\"?"; if (d.showAndGet()) d.selectedTransition?.let { applyTransition(issueKey, it) } } } }
     private fun onStopped(issueKey: String) { runBg(onError={}) { val ts = try { service<JiraService>().apiFromSettings().getTransitions(issueKey) } catch (_: Throwable) { return@runBg }; if (ts.isEmpty()) return@runBg; val cs = currentIssue?.status; runUi { val d = TransitionPickerDialog(project, issueKey, ts, cs); d.title = "Tracking stopped — move \"$issueKey\"?"; if (d.showAndGet()) d.selectedTransition?.let { applyTransition(issueKey, it) } } } }
     private fun applyTransition(issueKey: String, t: JiraTransition) {
@@ -278,9 +300,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         runBg(onError = { setStatus(false, "Transition error: ${it.message}") }) { service<JiraService>().apiFromSettings().doTransition(issueKey, t.id); runUi { setStatus(false, "$issueKey → ${t.name}"); if (currentIssue?.key == issueKey) loadIssueDetails(issueKey); loadIssues() } }
     }
     private fun connectAndLoad() {
-        if (service<JiraProfilesState>().activeProfile() == null) { setStatus(false, "No active profile"); return }
+        if (service<JiraProfilesState>().activeProfile() == null) { resetToWelcome(); return }
         setStatus(true, "Connecting...")
-        runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
+        runBg(onError = { setStatus(false, "Error: ${it.message}"); runUi { resetToWelcome() } }) {
             val api = service<JiraService>().apiFromSettings()
             val name = api.testConnection()
             val projects = api.getProjects().sortedBy { it.name.lowercase() }
@@ -414,6 +436,60 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             val html = "<html><body style='font-family:sans-serif;font-size:12px;margin:0;padding:0'>" +
                 "<table cellspacing='0' cellpadding='0' width='100%'>$rows</table></body></html>"
             runUi { fieldsPane.text = html; fieldsPane.caretPosition = 0 }
+        }
+    }
+    private fun refreshMovement(issueKey: String) {
+        movementPane.text = "<html><body style='font-family:sans-serif;font-size:12px;background:transparent'><i>Loading...</i></body></html>"
+        runBg(onError = { runUi { movementPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
+            val api = service<JiraService>().apiFromSettings()
+            val body = org.json.JSONObject().put("jql", "key = $issueKey").put("maxResults", 1)
+                .put("fields", org.json.JSONArray().put("status"))
+                .put("expand", "changelog")
+            val (code, json) = api.searchPost(body)
+            if (code != 200) { runUi { movementPane.text = "<html><body>Failed to load changelog</body></html>" }; return@runBg }
+
+            val issues = json.optJSONArray("issues")
+            val issue = issues?.optJSONObject(0)
+            val changelog = issue?.optJSONObject("changelog")
+            val histories = changelog?.optJSONArray("histories")
+
+            val movements = mutableListOf<Triple<String, String, String>>() // timestamp, author, "from → to"
+            if (histories != null) {
+                for (i in 0 until histories.length()) {
+                    val h = histories.optJSONObject(i) ?: continue
+                    val author = h.optJSONObject("author")?.optString("displayName") ?: "unknown"
+                    val created = h.optString("created")
+                    val items = h.optJSONArray("items") ?: continue
+                    for (j in 0 until items.length()) {
+                        val item = items.optJSONObject(j) ?: continue
+                        if (item.optString("field") == "status") {
+                            val from = item.optString("fromString")
+                            val to = item.optString("toString")
+                            movements.add(Triple(created, author, "$from → $to"))
+                        }
+                    }
+                }
+            }
+            movements.reverse() // newest first
+
+            val rows = if (movements.isEmpty()) "<tr><td style='padding:12px;color:#888888'>No status changes found</td></tr>"
+            else movements.mapIndexed { idx, (ts, author, change) ->
+                val time = try {
+                    java.time.OffsetDateTime.parse(ts).toLocalDateTime().format(java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm"))
+                } catch (_: Throwable) { ts }
+                val dotColor = if (idx == 0) "#1B7F3A" else "#0052CC"
+                val line = if (idx < movements.size - 1) "border-left:2px solid #3C3F41" else ""
+                "<tr>" +
+                "<td style='padding:4px 12px;vertical-align:top;text-align:center'><span style='color:$dotColor;font-size:16px'>●</span></td>" +
+                "<td style='padding:6px 8px;$line'>" +
+                "<div style='font-weight:bold;font-size:13px'>$change</div>" +
+                "<div style='color:#888888;font-size:11px'>$author &nbsp; $time</div>" +
+                "</td></tr>"
+            }.joinToString("")
+
+            val html = "<html><body style='font-family:sans-serif;font-size:12px;background:transparent;padding:8px'>" +
+                "<table cellspacing='0' cellpadding='0'>$rows</table></body></html>"
+            runUi { movementPane.text = html; movementPane.caretPosition = 0 }
         }
     }
     private fun refreshComments(issueKey: String) {
