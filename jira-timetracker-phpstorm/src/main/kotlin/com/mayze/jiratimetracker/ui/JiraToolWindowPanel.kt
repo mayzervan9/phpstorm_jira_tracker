@@ -302,7 +302,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun connectAndLoad() {
         if (service<JiraProfilesState>().activeProfile() == null) { resetToWelcome(); return }
         setStatus(true, "Connecting...")
-        runBg(onError = { setStatus(false, "Error: ${it.message}"); runUi { resetToWelcome() } }) {
+        runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
             val api = service<JiraService>().apiFromSettings()
             runUi { setStatus(true, "Authenticating...") }
             val name = api.testConnection()
