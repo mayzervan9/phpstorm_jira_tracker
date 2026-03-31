@@ -4,21 +4,23 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
-import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
+import java.awt.Cursor
+import java.awt.Desktop
 import java.awt.Dimension
+import java.awt.Font
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.net.URI
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JTabbedPane
 
-/**
- * Dialog for creating or editing a single Jira profile.
- * Pass [existing] to edit, null to create new.
- */
 class AddEditProfileDialog(
     project: Project?,
     private val existing: JiraProfile? = null
@@ -26,10 +28,18 @@ class AddEditProfileDialog(
 
     private val nameField = JBTextField()
     private val baseUrlField = JBTextField()
-    private val emailField = JBTextField()
-    private val tokenField = JBPasswordField()
-    private val isCloudBox = JBCheckBox("Jira Cloud (API token). Uncheck for Server/DC.", true)
     private val intervalField = JBTextField("5")
+
+    // Cloud tab
+    private val cloudEmailField = JBTextField()
+    private val cloudTokenField = JBPasswordField()
+
+    // Server tab
+    private val serverUsernameField = JBTextField()
+    private val serverPasswordField = JBPasswordField()
+    private val serverPatField = JBPasswordField()
+
+    private val authTabs = JTabbedPane()
 
     init {
         title = if (existing == null) "Add Jira Profile" else "Edit Jira Profile"
@@ -38,69 +48,126 @@ class AddEditProfileDialog(
     }
 
     override fun createCenterPanel(): JComponent {
-        val form = FormBuilder.createFormBuilder()
+        // Common fields
+        val common = FormBuilder.createFormBuilder()
             .addLabeledComponent("Profile name:", nameField, 1, false)
-            .addSeparator()
             .addLabeledComponent("Base URL:", baseUrlField, 1, false)
-            .addLabeledComponent("Email / Username:", emailField, 1, false)
-            .addLabeledComponent("API token / Password:", tokenField, 1, false)
-            .addComponent(javax.swing.JLabel("<html><small><a href='https://id.atlassian.com/manage-profile/security/api-tokens'>Get API token for Jira Cloud</a></small></html>").apply {
-                cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
-                addMouseListener(object : java.awt.event.MouseAdapter() {
-                    override fun mouseClicked(e: java.awt.event.MouseEvent?) { try { java.awt.Desktop.getDesktop().browse(java.net.URI("https://id.atlassian.com/manage-profile/security/api-tokens")) } catch (_: Throwable) {} }
-                })
-            })
-            .addComponent(isCloudBox)
-            .addSeparator()
-            .addLabeledComponent("Update interval (min):", intervalField, 1, false)
-            .addComponentFillVertically(JPanel(), 0)
             .panel
 
-        val hint = if (existing != null)
-            "<html><small>Leave token blank to keep the existing one.</small></html>"
-        else
-            "<html><small>Token is stored securely in IDE PasswordSafe.</small></html>"
+        // Cloud auth tab
+        val tokenLink = JLabel("<html><a href='#'>Get API token (Jira Cloud)</a></html>").apply {
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent?) {
+                    try { Desktop.getDesktop().browse(URI("https://id.atlassian.com/manage-profile/security/api-tokens")) } catch (_: Throwable) {}
+                }
+            })
+        }
+        val cloudPanel = FormBuilder.createFormBuilder()
+            .addLabeledComponent("Email:", cloudEmailField, 1, false)
+            .addLabeledComponent("API Token:", cloudTokenField, 1, false)
+            .addComponent(tokenLink)
+            .addComponentFillVertically(JPanel(), 0)
+            .panel.apply { border = JBUI.Borders.empty(8) }
 
-        return JPanel(BorderLayout(0, 8)).apply {
+        // Server auth tab — two sub-options
+        val serverPanel = JPanel(BorderLayout(0, 8)).apply {
+            border = JBUI.Borders.empty(8)
+            val loginPass = FormBuilder.createFormBuilder()
+                .addComponent(JLabel("Option 1: Username + Password").apply { font = font.deriveFont(Font.BOLD) })
+                .addLabeledComponent("Username:", serverUsernameField, 1, false)
+                .addLabeledComponent("Password:", serverPasswordField, 1, false)
+                .addSeparator()
+                .addComponent(JLabel("Option 2: Personal Access Token (PAT)").apply { font = font.deriveFont(Font.BOLD) })
+                .addLabeledComponent("PAT:", serverPatField, 1, false)
+                .addComponent(JLabel("<html><small>Use either login+password OR PAT. If PAT is filled, it takes priority.</small></html>"))
+                .addComponentFillVertically(JPanel(), 0)
+                .panel
+            add(loginPass, BorderLayout.CENTER)
+        }
+
+        authTabs.addTab("Jira Cloud", cloudPanel)
+        authTabs.addTab("Server / Data Center", serverPanel)
+
+        // Bottom
+        val bottom = FormBuilder.createFormBuilder()
+            .addLabeledComponent("Update interval (min):", intervalField, 1, false)
+            .panel.apply { border = JBUI.Borders.empty(4, 0) }
+
+        val hint = if (existing != null)
+            "Leave credentials blank to keep existing."
+        else
+            "Credentials are stored securely in IDE PasswordSafe."
+
+        return JPanel(BorderLayout(0, 4)).apply {
             border = JBUI.Borders.empty(4)
-            preferredSize = Dimension(420, 300)
-            add(JLabel(hint), BorderLayout.NORTH)
-            add(form, BorderLayout.CENTER)
+            preferredSize = Dimension(440, 380)
+            add(JLabel(hint).apply { font = font.deriveFont(Font.PLAIN, 11f); border = JBUI.Borders.emptyBottom(4) }, BorderLayout.NORTH)
+            add(JPanel(BorderLayout(0, 6)).apply {
+                add(common, BorderLayout.NORTH)
+                add(authTabs, BorderLayout.CENTER)
+                add(bottom, BorderLayout.SOUTH)
+            }, BorderLayout.CENTER)
         }
     }
 
     override fun doValidate(): ValidationInfo? {
         if (nameField.text.isBlank()) return ValidationInfo("Profile name is required", nameField)
         if (baseUrlField.text.isBlank()) return ValidationInfo("Base URL is required", baseUrlField)
-        if (emailField.text.isBlank()) return ValidationInfo("Email / Username is required", emailField)
-        if (existing == null && String(tokenField.password).isBlank())
-            return ValidationInfo("Token / Password is required", tokenField)
+        if (existing == null) {
+            if (isCloudSelected()) {
+                if (cloudEmailField.text.isBlank()) return ValidationInfo("Email is required", cloudEmailField)
+                if (String(cloudTokenField.password).isBlank()) return ValidationInfo("API Token is required", cloudTokenField)
+            } else {
+                val hasPat = String(serverPatField.password).isNotBlank()
+                val hasLogin = serverUsernameField.text.isNotBlank() && String(serverPasswordField.password).isNotBlank()
+                if (!hasPat && !hasLogin) return ValidationInfo("Enter username+password or PAT", serverUsernameField)
+            }
+        }
         return null
     }
 
-    /** Call after isOK to persist the profile */
     fun applyToState() {
         val state = service<JiraProfilesState>()
         val profile = existing ?: JiraProfile()
 
         profile.name = nameField.text.trim()
         profile.baseUrl = baseUrlField.text.trim().trimEnd('/')
-        profile.emailOrUsername = emailField.text.trim()
-        profile.isCloud = isCloudBox.isSelected
+        profile.isCloud = isCloudSelected()
         profile.updateIntervalMinutes = intervalField.text.toIntOrNull()?.coerceIn(1, 60) ?: 5
 
-        val typedToken = String(tokenField.password)
-        if (typedToken.isNotBlank()) state.saveToken(profile.id, typedToken)
+        if (isCloudSelected()) {
+            profile.emailOrUsername = cloudEmailField.text.trim()
+            val token = String(cloudTokenField.password)
+            if (token.isNotBlank()) state.saveToken(profile.id, token)
+        } else {
+            val pat = String(serverPatField.password)
+            if (pat.isNotBlank()) {
+                // PAT mode — username can be empty
+                profile.emailOrUsername = serverUsernameField.text.trim()
+                state.saveToken(profile.id, pat)
+            } else {
+                profile.emailOrUsername = serverUsernameField.text.trim()
+                val pass = String(serverPasswordField.password)
+                if (pass.isNotBlank()) state.saveToken(profile.id, pass)
+            }
+        }
 
         if (existing == null) state.addProfile(profile)
     }
 
+    private fun isCloudSelected() = authTabs.selectedIndex == 0
+
     private fun loadFrom(p: JiraProfile) {
         nameField.text = p.name
         baseUrlField.text = p.baseUrl
-        emailField.text = p.emailOrUsername
-        isCloudBox.isSelected = p.isCloud
         intervalField.text = p.updateIntervalMinutes.toString()
-        tokenField.text = "" // never show stored token
+        if (p.isCloud) {
+            authTabs.selectedIndex = 0
+            cloudEmailField.text = p.emailOrUsername
+        } else {
+            authTabs.selectedIndex = 1
+            serverUsernameField.text = p.emailOrUsername
+        }
     }
 }
