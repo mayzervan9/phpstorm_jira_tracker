@@ -43,8 +43,8 @@ class AddEditProfileDialog(
 
     init {
         title = if (existing == null) "Add Jira Profile" else "Edit Jira Profile"
-        if (existing != null) loadFrom(existing)
         init()
+        if (existing != null) loadFrom(existing)
     }
 
     override fun createCenterPanel(): JComponent {
