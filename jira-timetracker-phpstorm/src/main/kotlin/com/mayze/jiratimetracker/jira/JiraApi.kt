@@ -477,6 +477,11 @@ class JiraApi(private val auth: JiraAuth) {
         return Pair(c2, j2)
     }
 
+    /** Get issue with changelog expansion */
+    fun tryGetIssueWithChangelog(issueKey: String, ver: String): Pair<Int, JSONObject> {
+        return tryGetJson("$base/rest/api/$ver/issue/$issueKey?expand=changelog&fields=status")
+    }
+
     fun getComments(issueKey: String, maxResults: Int = 100): List<JiraComment> {
         val (code, json) = tryGetJson("$base/rest/api/3/issue/$issueKey/comment?maxResults=$maxResults")
         if (code != 200) {

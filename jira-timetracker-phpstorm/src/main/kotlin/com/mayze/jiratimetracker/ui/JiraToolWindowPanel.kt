@@ -112,6 +112,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private var currentIssue: JiraIssue? = null
     private val commentInFlight = AtomicBoolean(false)
     private val mrInFlight      = AtomicBoolean(false)
+    private lateinit var rightPanel: JPanel
+    private lateinit var rightEmptyLabel: JBLabel
+    private lateinit var detailTabsRef: JTabbedPane
     private val cards = CardLayout()
     private val cardPanel = JPanel(cards)
 
@@ -161,7 +164,16 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         add(JPanel(FlowLayout(FlowLayout.LEFT,4,4)).apply { isOpaque=false; add(profilesBtn); add(connectBtn); add(loadingIcon); add(profileLabel) }, BorderLayout.WEST)
         add(JPanel(FlowLayout(FlowLayout.RIGHT,8,4)).apply { isOpaque=false; add(toolbarTodayLabel); add(statusLabel) }, BorderLayout.EAST)
     }
-    private fun buildSplitter() = JBSplitter(false, 0.28f).apply { firstComponent = buildLeft(); secondComponent = buildRight() }
+    private val rightCards = java.awt.CardLayout()
+    private val rightCardPanel = JPanel(rightCards)
+    private fun buildSplitter() = JBSplitter(false, 0.28f).apply {
+        firstComponent = buildLeft()
+        rightEmptyLabel = JBLabel("Select a project and issue").apply { horizontalAlignment = JLabel.CENTER; foreground = gray() }
+        rightCardPanel.add(JPanel(java.awt.GridBagLayout()).apply { add(rightEmptyLabel) }, "empty")
+        rightCardPanel.add(buildRight(), "content")
+        rightCards.show(rightCardPanel, "empty")
+        secondComponent = rightCardPanel
+    }
     private fun buildLeft(): JPanel {
         val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER); add(myProjectsCheck, BorderLayout.EAST) }
         val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(sortCombo); add(noEstimateCheck); add(activeSprintCheck) }
@@ -173,7 +185,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
 
     private fun buildRight(): JPanel {
         val metaBar = JPanel(FlowLayout(FlowLayout.LEFT,6,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,4,8); add(issueStatusLabel); add(estimateLabel); add(copyKeyBtn); add(openInBrowserBtn); add(copyLinkBtn); add(setEstimateBtn); add(changeStatusBtn) }
-        val detailTabs = JTabbedPane().apply {
+        detailTabsRef = JTabbedPane().apply {
             addTab("Description", AllIcons.Actions.Preview, sp(descPane))
             addTab("Comments", AllIcons.General.Balloon, sp(commentsList))
             addTab("Worklogs", AllIcons.Vcs.History, sp(worklogsList))
@@ -181,6 +193,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             addTab("Fields", AllIcons.Nodes.DataTables, sp(fieldsPane))
             addChangeListener { val key = currentIssue?.key ?: return@addChangeListener; when (selectedIndex) { 1 -> refreshComments(key); 2 -> refreshWorklogs(key); 3 -> refreshMovement(key); 4 -> refreshFields(key) } }
         }
+        val detailTabs = detailTabsRef
         val actionTabs = JTabbedPane().apply { addTab("Tracker", AllIcons.Actions.Execute, buildTracker()); addTab("Comment", AllIcons.General.Add, buildCommentP()); addTab("MR/PR", AllIcons.Vcs.Merge, buildMrP()); addTab("Today", AllIcons.Vcs.History, buildTodayP()) }
         val issuePanel = JPanel(BorderLayout()).apply {
             add(JBSplitter(true, 0.60f).apply {
@@ -290,6 +303,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         commentsModel.clear()
         worklogsModel.clear()
         activityModel.clear()
+        rightCards.show(rightCardPanel, "empty")
         cards.show(cardPanel, "welcome")
     }
     private fun onStarted(issueKey: String) { runBg(onError={}) { val ts = try { service<JiraService>().apiFromSettings().getTransitions(issueKey) } catch (_: Throwable) { return@runBg }; if (ts.isEmpty()) return@runBg; val cs = currentIssue?.status; runUi { val d = TransitionPickerDialog(project, issueKey, ts, cs); d.title = "Tracking started — move \"$issueKey\"?"; if (d.showAndGet()) d.selectedTransition?.let { applyTransition(issueKey, it) } } } }
@@ -408,6 +422,8 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     }
 
     private fun loadIssueDetails(issueKey: String) {
+        rightCards.show(rightCardPanel, "content")
+        if (::detailTabsRef.isInitialized) detailTabsRef.selectedIndex = 0
         issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descPane.text = "<html><body>Loading...</body></html>"; commentsModel.clear(); worklogsModel.clear()
         runBg(onError = { runUi { descPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
             val api = service<JiraService>().apiFromSettings(); val issue = api.getIssueDetails(issueKey); val cs = api.getComments(issueKey); val wls = api.getWorklogs(issueKey)
@@ -454,18 +470,17 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         movementPane.text = "<html><body style='font-family:sans-serif;font-size:12px;background:transparent'><i>Loading...</i></body></html>"
         runBg(onError = { runUi { movementPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
             val api = service<JiraService>().apiFromSettings()
-            val body = org.json.JSONObject().put("jql", "key = $issueKey").put("maxResults", 1)
-                .put("fields", org.json.JSONArray().put("status"))
-                .put("expand", "changelog")
-            val (code, json) = api.searchPost(body)
-            if (code != 200) { runUi { movementPane.text = "<html><body>Failed to load changelog</body></html>" }; return@runBg }
+            // Use direct issue endpoint with changelog expansion
+            var changelog: org.json.JSONObject? = null
+            for (ver in listOf("3", "2")) {
+                try {
+                    val (code, json) = api.tryGetIssueWithChangelog("$issueKey", ver)
+                    if (code == 200) { changelog = json.optJSONObject("changelog"); break }
+                } catch (_: Throwable) {}
+            }
 
-            val issues = json.optJSONArray("issues")
-            val issue = issues?.optJSONObject(0)
-            val changelog = issue?.optJSONObject("changelog")
             val histories = changelog?.optJSONArray("histories")
-
-            val movements = mutableListOf<Triple<String, String, String>>() // timestamp, author, "from → to"
+            val movements = mutableListOf<Triple<String, String, String>>()
             if (histories != null) {
                 for (i in 0 until histories.length()) {
                     val h = histories.optJSONObject(i) ?: continue
@@ -482,7 +497,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
                     }
                 }
             }
-            movements.reverse() // newest first
+            movements.reverse()
 
             val rows = if (movements.isEmpty()) "<tr><td style='padding:12px;color:#888888'>No status changes found</td></tr>"
             else movements.mapIndexed { idx, (ts, author, change) ->
@@ -491,12 +506,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
                 } catch (_: Throwable) { ts }
                 val dotColor = if (idx == 0) "#1B7F3A" else "#0052CC"
                 val line = if (idx < movements.size - 1) "border-left:2px solid #3C3F41" else ""
-                "<tr>" +
-                "<td style='padding:4px 12px;vertical-align:top;text-align:center'><span style='color:$dotColor;font-size:16px'>●</span></td>" +
-                "<td style='padding:6px 8px;$line'>" +
-                "<div style='font-weight:bold;font-size:13px'>$change</div>" +
-                "<div style='color:#888888;font-size:11px'>$author &nbsp; $time</div>" +
-                "</td></tr>"
+                "<tr><td style='padding:4px 12px;vertical-align:top;text-align:center'><span style='color:$dotColor;font-size:16px'>●</span></td>" +
+                "<td style='padding:6px 8px;$line'><div style='font-weight:bold;font-size:13px'>$change</div>" +
+                "<div style='color:#888888;font-size:11px'>$author &nbsp; $time</div></td></tr>"
             }.joinToString("")
 
             val html = "<html><body style='font-family:sans-serif;font-size:12px;background:transparent;padding:8px'>" +
