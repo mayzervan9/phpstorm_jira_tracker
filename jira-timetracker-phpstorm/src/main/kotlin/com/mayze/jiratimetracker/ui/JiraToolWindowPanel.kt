@@ -1,6 +1,7 @@
 package com.mayze.jiratimetracker.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.components.service
@@ -27,7 +28,6 @@ import java.awt.*
 import java.awt.datatransfer.StringSelection
 import java.net.URI
 import java.time.OffsetDateTime
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
 import javax.swing.event.DocumentEvent
@@ -35,10 +35,9 @@ import javax.swing.event.DocumentListener
 import javax.swing.Timer as SwingTimer
 
 @Suppress("TooManyFunctions")
-class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout()) {
+class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
     private companion object {
         const val MAX_COMMENTS = 80; const val MAX_WORKLOGS = 120
-        val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("dd MMM HH:mm")
     }
     private val profilesBtn = ib(AllIcons.General.Settings, "Manage Jira Profiles")
     private val connectBtn  = ib(AllIcons.Actions.Refresh,  "Connect")
@@ -60,7 +59,6 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val issuesModel  = DefaultListModel<JiraIssue>()
     private val issuesList   = JBList(issuesModel).apply { selectionMode = ListSelectionModel.SINGLE_SELECTION; cellRenderer = JiraIssueRenderer(); emptyText.text = "Connect to load issues" }
     private var allIssues: List<JiraIssue> = emptyList()
-    private var availableStatuses: List<String> = emptyList()
     private var statusIdMap: Map<String, String> = emptyMap()
     private val issueTitleLabel = JBLabel("Select a project and issue to get started").apply { font = font.deriveFont(Font.BOLD, 13f); border = JBUI.Borders.empty(6,8,2,8) }
     private val issueStatusLabel = JBLabel("").apply { font = font.deriveFont(Font.PLAIN, 11f); foreground = gray() }
@@ -166,8 +164,6 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         add(JPanel(FlowLayout(FlowLayout.LEFT,4,4)).apply { isOpaque=false; add(profilesBtn); add(connectBtn); add(loadingIcon); add(profileLabel) }, BorderLayout.WEST)
         add(JPanel(FlowLayout(FlowLayout.RIGHT,8,4)).apply { isOpaque=false; add(toolbarTodayLabel); add(statusLabel) }, BorderLayout.EAST)
     }
-    private val rightCards = java.awt.CardLayout()
-    private val rightCardPanel = JPanel(rightCards)
     private fun buildSplitter() = JBSplitter(false, 0.28f).apply {
         firstComponent = buildLeft()
         secondComponent = buildRight()
@@ -277,19 +273,26 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         addCommentBtn.addActionListener { submitComment() }
         saveMrBtn.addActionListener     { submitMr() }
     }
+    private lateinit var busConnection: com.intellij.util.messages.MessageBusConnection
     private fun subscribeTracking() {
-        val bus = project.messageBus.connect()
-        bus.subscribe(TrackingTopics.TRACKING_UPDATES, object : TrackingListener { override fun onTrackingUpdated(snapshot: TrackingSnapshot) = runUi { renderTracking(snapshot) } })
-        bus.subscribe(TrackingTopics.TRACKING_STARTED, object : TrackingStartedListener { override fun onTrackingStarted(issueKey: String) = onStarted(issueKey) })
-        bus.subscribe(TrackingTopics.TRACKING_STOPPED, object : TrackingStoppedListener { override fun onTrackingStopped(issueKey: String) = onStopped(issueKey) })
+        busConnection = project.messageBus.connect()
+        busConnection.subscribe(TrackingTopics.TRACKING_UPDATES, object : TrackingListener { override fun onTrackingUpdated(snapshot: TrackingSnapshot) = runUi { renderTracking(snapshot) } })
+        busConnection.subscribe(TrackingTopics.TRACKING_STARTED, object : TrackingStartedListener { override fun onTrackingStarted(issueKey: String) = onStarted(issueKey) })
+        busConnection.subscribe(TrackingTopics.TRACKING_STOPPED, object : TrackingStoppedListener { override fun onTrackingStopped(issueKey: String) = onStopped(issueKey) })
         renderTracking(project.service<TimeTrackerService>().getSnapshot())
     }
 
     // ── Actions ───────────────────────────────────────────────────────────────
     private fun openProfiles() {
+        val prevId = service<JiraProfilesState>().activeProfileId
         val d = ManageProfilesDialog(project); d.showAndGet()
-        if (service<JiraProfilesState>().activeProfile() != null) { showMain(); connectAndLoad() }
-        else resetToWelcome()
+        val newProfile = service<JiraProfilesState>().activeProfile()
+        if (newProfile != null) {
+            showMain()
+            // Only reconnect if profile changed or was newly selected
+            if (newProfile.id != prevId || projectCombo.itemCount == 0) connectAndLoad()
+            else refreshProfileLabel()
+        } else resetToWelcome()
     }
 
     private fun resetToWelcome() {
@@ -387,7 +390,6 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             val pairs = try { service<JiraService>().apiFromSettings().getProjectStatuses(p.key) } catch (_: Throwable) { emptyList() }
             runUi {
                 statusIdMap = pairs.toMap()
-                availableStatuses = pairs.map { it.first }
                 val m = statusFilterCombo.model as DefaultComboBoxModel
                 m.removeAllElements()
                 m.addElement("All statuses")
@@ -423,7 +425,13 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             "Key ↓" -> f.sortedByDescending { it.key }
             else -> f
         }
+        val prevKey = issuesList.selectedValue?.key
         issuesModel.clear(); f.forEach { issuesModel.addElement(it) }
+        // Restore selection
+        if (prevKey != null) {
+            val idx = (0 until issuesModel.size()).firstOrNull { issuesModel[it].key == prevKey }
+            if (idx != null) issuesList.selectedIndex = idx
+        }
     }
     private fun priorityOrder(p: String?): Int = when (p?.lowercase()) {
         "highest", "critical" -> 1; "high" -> 2; "medium" -> 3; "low" -> 4; "lowest" -> 5; else -> 99
@@ -601,7 +609,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         sortCombo.isEnabled = hasProject
         noEstimateCheck.isEnabled = hasProject
         activeSprintCheck.isEnabled = hasProject
-        searchField.isEnabled = hasProject
+        searchField.textEditor.isEnabled = hasProject
     }
     private fun refreshProfileLabel() {
         val p = service<JiraProfilesState>().activeProfile()
@@ -625,25 +633,40 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             if (p == null) { runUi { setStatus(false, "Select a project first"); historyProgressLabel.isVisible = false }; return@runBg }
             val issues = api.searchMyIssues(p.key, maxResults = 100)
             val dayDetails = java.util.TreeMap<java.time.LocalDate, MutableMap<String, Int>>(compareByDescending { it })
-            var processed = 0
-            for (issue in issues) {
-                processed++
-                val pct = processed
-                val total = issues.size
-                runUi { historyProgressLabel.text = "Loading worklogs... $pct / $total issues"; setStatus(true, "Loading... ($pct/$total issues)") }
+            val processed = java.util.concurrent.atomic.AtomicInteger(0)
+            val total = issues.size
+
+            // Process in parallel batches of 5
+            val executor = java.util.concurrent.Executors.newFixedThreadPool(5)
+            val futures = issues.map { issue ->
+                executor.submit<List<Pair<java.time.LocalDate, Pair<String, Int>>>> {
+                    val pct = processed.incrementAndGet()
+                    runUi { historyProgressLabel.text = "Loading worklogs... $pct / $total issues"; setStatus(true, "Loading... ($pct/$total issues)") }
+                    val result = mutableListOf<Pair<java.time.LocalDate, Pair<String, Int>>>()
+                    try {
+                        val wls = api.getWorklogs(issue.key, maxResults = 500)
+                        for (wl in wls) {
+                            val isMe = (!me.accountId.isNullOrBlank() && wl.authorAccountId == me.accountId) ||
+                                (!me.displayName.isNullOrBlank() && wl.authorDisplayName == me.displayName) ||
+                                (!me.key.isNullOrBlank() && wl.authorKey == me.key) ||
+                                (!me.name.isNullOrBlank() && wl.authorName == me.name)
+                            if (!isMe) continue
+                            val day = wl.started?.toLocalDate() ?: continue
+                            result.add(day to (issue.key to wl.timeSpentSeconds))
+                        }
+                    } catch (_: Throwable) {}
+                    result
+                }
+            }
+            for (future in futures) {
                 try {
-                    val wls = api.getWorklogs(issue.key, maxResults = 500)
-                    for (wl in wls) {
-                        val isMe = (!me.accountId.isNullOrBlank() && wl.authorAccountId == me.accountId) ||
-                            (!me.displayName.isNullOrBlank() && wl.authorDisplayName == me.displayName) ||
-                            (!me.key.isNullOrBlank() && wl.authorKey == me.key) ||
-                            (!me.name.isNullOrBlank() && wl.authorName == me.name)
-                        if (!isMe) continue
-                        val day = wl.started?.toLocalDate() ?: continue
-                        dayDetails.getOrPut(day) { mutableMapOf() }.let { it[issue.key] = (it[issue.key] ?: 0) + wl.timeSpentSeconds }
+                    for ((day, kv) in future.get()) {
+                        dayDetails.getOrPut(day) { mutableMapOf() }.let { it[kv.first] = (it[kv.first] ?: 0) + kv.second }
                     }
                 } catch (_: Throwable) {}
             }
+            executor.shutdown()
+
             val entries = mutableListOf<HistoryEntry>()
             var weekTotal = 0; var lastWeek = -1
             for ((day, issueMap) in dayDetails) {
@@ -678,6 +701,10 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         }
     }
     // ── Util ──────────────────────────────────────────────────────────────────
+    override fun dispose() {
+        searchDebounce.stop()
+        if (::busConnection.isInitialized) busConnection.disconnect()
+    }
     private fun gray() = JBColor(Color(0x888888), Color(0x888888))
     private fun runBg(onError: (Throwable) -> Unit, block: () -> Unit) { ApplicationManager.getApplication().executeOnPooledThread { try { block() } catch (t: Throwable) { runUi { onError(t) } } } }
     private fun runUi(block: () -> Unit) { if (SwingUtilities.isEventDispatchThread()) block() else ApplicationManager.getApplication().invokeLater(block, ModalityState.any()) }

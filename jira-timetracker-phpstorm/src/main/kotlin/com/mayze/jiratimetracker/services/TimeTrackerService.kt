@@ -119,19 +119,23 @@ class TimeTrackerService(private val project: Project) {
         scheduled = null
         uiPulseScheduled?.cancel(false)
         uiPulseScheduled = null
-        // Wait for any in-progress flush to complete (max 5 seconds)
-        var waitCount = 0
-        while (flushing.get() && waitCount < 100) { Thread.sleep(50); waitCount++ }
         val stoppedIssue = currentIssueKey.orEmpty()
-        notify("Tracking stopped", "${stoppedIssue} — ${formatSecondsShort(accumulatedSeconds.get())} this session")
+        val sessionSeconds = accumulatedSeconds.get()
+        // Reset state immediately so UI updates
         currentIssueKey = null
         startedAtLocal = null
         lastFlushAt = null
-        currentUserAccountId = null; currentUserKey = null; currentUserName = null
-        currentUserEmail = null; currentUserDisplayName = null
         activeWorklogId = null; activeWorklogStarted = null; activeWorklogBaseSeconds = 0
         accumulatedSeconds.set(0)
         publish()
+        // Wait for flush and notify in background to avoid blocking EDT
+        AppExecutorUtil.getAppScheduledExecutorService().execute {
+            var waitCount = 0
+            while (flushing.get() && waitCount < 100) { Thread.sleep(50); waitCount++ }
+            currentUserAccountId = null; currentUserKey = null; currentUserName = null
+            currentUserEmail = null; currentUserDisplayName = null
+            notify("Tracking stopped", "${stoppedIssue} — ${formatSecondsShort(sessionSeconds)} this session")
+        }
         if (stoppedIssue.isNotBlank()) {
             project.messageBus.syncPublisher(TrackingTopics.TRACKING_STOPPED).onTrackingStopped(stoppedIssue)
         }
