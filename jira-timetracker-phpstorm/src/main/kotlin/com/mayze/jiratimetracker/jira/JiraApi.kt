@@ -58,27 +58,38 @@ class JiraApi(private val auth: JiraAuth) {
     }
 
     fun getProjects(): List<JiraProject> {
-        val (code, json) = tryGetJson("$base/rest/api/3/project/search")
-        if (code != 200) {
-            // fallback old endpoint
-            val (c2, arr) = tryGetJsonArray("$base/rest/api/2/project")
-            if (c2 != 200) throw RuntimeException("Projects load failed: HTTP $code / $c2")
-            return arr.map {
-                JiraProject(
-                    id = it.optString("id"),
-                    key = it.optString("key"),
-                    name = it.optString("name")
-                )
+        // Try v3 paginated endpoint
+        val (code, json) = tryGetJson("$base/rest/api/3/project/search?maxResults=1000")
+        if (code == 200) {
+            val values = json.optJSONArray("values") ?: JSONArray()
+            if (values.length() > 0) return values.map {
+                JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name"))
             }
         }
-        val values = json.optJSONArray("values") ?: JSONArray()
-        return values.map {
-            JiraProject(
-                id = it.optString("id"),
-                key = it.optString("key"),
-                name = it.optString("name")
-            )
+        // Try v2 paginated
+        val (c2a, j2a) = tryGetJson("$base/rest/api/2/project/search?maxResults=1000")
+        if (c2a == 200) {
+            val values = j2a.optJSONArray("values") ?: JSONArray()
+            if (values.length() > 0) return values.map {
+                JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name"))
+            }
         }
+        // Fallback: plain array endpoint (Server/DC)
+        val (c3, text3) = requestText("GET", "$base/rest/api/3/project", null)
+        if (c3 == 200) {
+            val arr = try { JSONArray(text3) } catch (_: Throwable) { null }
+            if (arr != null && arr.length() > 0) return arr.map {
+                JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name"))
+            }
+        }
+        val (c4, text4) = requestText("GET", "$base/rest/api/2/project", null)
+        if (c4 == 200) {
+            val arr = try { JSONArray(text4) } catch (_: Throwable) { null }
+            if (arr != null && arr.length() > 0) return arr.map {
+                JiraProject(id = it.optString("id"), key = it.optString("key"), name = it.optString("name"))
+            }
+        }
+        throw RuntimeException("Projects load failed: HTTP $code / $c2a / $c3 / $c4")
     }
 
     fun searchMyIssues(

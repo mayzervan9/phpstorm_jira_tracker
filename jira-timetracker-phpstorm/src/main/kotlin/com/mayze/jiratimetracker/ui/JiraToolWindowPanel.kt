@@ -61,7 +61,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private var allIssues: List<JiraIssue> = emptyList()
     private var availableStatuses: List<String> = emptyList()
     private var statusIdMap: Map<String, String> = emptyMap()
-    private val issueTitleLabel = JBLabel("").apply { font = font.deriveFont(Font.BOLD, 13f); border = JBUI.Borders.empty(6,8,2,8) }
+    private val issueTitleLabel = JBLabel("Select a project and issue to get started").apply { font = font.deriveFont(Font.BOLD, 13f); border = JBUI.Borders.empty(6,8,2,8) }
     private val issueStatusLabel = JBLabel("").apply { font = font.deriveFont(Font.PLAIN, 11f); foreground = gray() }
     private val estimateLabel    = JBLabel("").apply { font = font.deriveFont(Font.PLAIN, 11f); foreground = gray() }
     private val openInBrowserBtn = ib(AllIcons.General.Web, "Open in browser")
@@ -304,13 +304,16 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         setStatus(true, "Connecting...")
         runBg(onError = { setStatus(false, "Error: ${it.message}"); runUi { resetToWelcome() } }) {
             val api = service<JiraService>().apiFromSettings()
+            runUi { setStatus(true, "Authenticating...") }
             val name = api.testConnection()
+            runUi { setStatus(true, "Loading projects...") }
             val projects = api.getProjects().sortedBy { it.name.lowercase() }
             allProjectsCache = projects
 
             // Find which projects have my issues (cache for 15 min)
             val now = System.currentTimeMillis()
             if (myProjectKeysCache.isEmpty() || now - myProjectsCacheTime > 15 * 60 * 1000) {
+                runUi { setStatus(true, "Finding your projects...") }
                 try {
                     val jql = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) ORDER BY updated DESC"
                     val body = org.json.JSONObject().put("jql", jql).put("maxResults", 200)
@@ -331,8 +334,11 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             }
 
             runUi {
-                setStatus(false, "Connected as $name")
+                setStatus(false, "Connected as $name (${projects.size} projects)")
                 refreshProjectList()
+                if (projectCombo.itemCount == 0) {
+                    setStatus(false, "Connected as $name — no projects found")
+                }
             }
         }
     }
