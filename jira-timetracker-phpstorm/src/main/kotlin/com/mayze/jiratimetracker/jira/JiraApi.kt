@@ -466,6 +466,14 @@ class JiraApi(private val auth: JiraAuth) {
         return activities.sortedByDescending { it.timestamp }
     }
 
+    /** Public search helper for custom JQL queries */
+    fun searchPost(body: JSONObject): Pair<Int, JSONObject> {
+        val (c3, j3) = tryPostJson("$base/rest/api/3/search", body)
+        if (c3 == 200) return Pair(c3, j3)
+        val (c2, j2) = tryPostJson("$base/rest/api/2/search", body)
+        return Pair(c2, j2)
+    }
+
     fun getComments(issueKey: String, maxResults: Int = 100): List<JiraComment> {
         val (code, json) = tryGetJson("$base/rest/api/3/issue/$issueKey/comment?maxResults=$maxResults")
         if (code != 200) {

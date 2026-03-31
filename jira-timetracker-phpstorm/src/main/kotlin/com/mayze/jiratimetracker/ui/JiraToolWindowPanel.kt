@@ -48,6 +48,10 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val statusFilterCombo = ComboBox(DefaultComboBoxModel(arrayOf("All statuses")))
     private val noEstimateCheck = JBCheckBox("No estimate only").apply { isOpaque = false }
     private val activeSprintCheck = JBCheckBox("Active sprint", true).apply { isOpaque = false; toolTipText = "Show only issues from the active sprint" }
+    private val myProjectsCheck = JBCheckBox("My projects", true).apply { isOpaque = false; toolTipText = "Show only projects where you have issues" }
+    private var allProjectsCache: List<JiraProject> = emptyList()
+    private var myProjectKeysCache: Set<String> = emptySet()
+    private var myProjectsCacheTime: Long = 0
     private val scopeCombo = ComboBox(DefaultComboBoxModel(arrayOf("My issues", "Involved", "All project"))).apply { toolTipText = "Filter scope" }
     private val sortCombo = ComboBox(DefaultComboBoxModel(arrayOf("Date ↓", "Date ↑", "Priority ↓", "Priority ↑", "Key ↓", "Key ↑"))).apply { toolTipText = "Sort issues" }
     private val projectCombo = ComboBox<JiraProject>()
@@ -154,7 +158,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     }
     private fun buildSplitter() = JBSplitter(false, 0.28f).apply { firstComponent = buildLeft(); secondComponent = buildRight() }
     private fun buildLeft(): JPanel {
-        val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER) }
+        val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER); add(myProjectsCheck, BorderLayout.EAST) }
         val filters = JPanel(FlowLayout(FlowLayout.LEFT,4,2)).apply { isOpaque=false; border=JBUI.Borders.empty(0,8,2,8); add(scopeCombo); add(statusFilterCombo); add(sortCombo); add(noEstimateCheck); add(activeSprintCheck) }
         return JPanel(BorderLayout()).apply {
             add(JPanel(BorderLayout()).apply { add(top, BorderLayout.NORTH); add(JPanel(BorderLayout()).apply { add(JPanel(BorderLayout()).apply { border=JBUI.Borders.empty(0,8,2,8); add(searchField, BorderLayout.CENTER) }, BorderLayout.NORTH); add(filters, BorderLayout.CENTER) }, BorderLayout.CENTER) }, BorderLayout.NORTH)
@@ -241,6 +245,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         statusFilterCombo.addActionListener { loadIssues() }
         noEstimateCheck.addActionListener   { loadIssues() }
         activeSprintCheck.addActionListener  { loadIssues() }
+        myProjectsCheck.addActionListener   { refreshProjectList() }
         scopeCombo.addActionListener        { loadIssues() }
         sortCombo.addActionListener         { filterIssues() }
         searchField.addDocumentListener(object : DocumentListener { override fun insertUpdate(e: DocumentEvent?)=filterIssues(); override fun removeUpdate(e: DocumentEvent?)=filterIssues(); override fun changedUpdate(e: DocumentEvent?)=filterIssues() })
@@ -276,9 +281,51 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         if (service<JiraProfilesState>().activeProfile() == null) { setStatus(false, "No active profile"); return }
         setStatus(true, "Connecting...")
         runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
-            val api = service<JiraService>().apiFromSettings(); val name = api.testConnection(); val projects = api.getProjects().sortedBy { it.name.lowercase() }
-            runUi { setStatus(false, "Connected as $name"); projectCombo.removeAllItems(); projects.forEach { projectCombo.addItem(it) }; if (projects.isNotEmpty()) projectCombo.selectedIndex = 0 }
+            val api = service<JiraService>().apiFromSettings()
+            val name = api.testConnection()
+            val projects = api.getProjects().sortedBy { it.name.lowercase() }
+            allProjectsCache = projects
+
+            // Find which projects have my issues (cache for 15 min)
+            val now = System.currentTimeMillis()
+            if (myProjectKeysCache.isEmpty() || now - myProjectsCacheTime > 15 * 60 * 1000) {
+                try {
+                    val jql = "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) ORDER BY updated DESC"
+                    val body = org.json.JSONObject().put("jql", jql).put("maxResults", 200)
+                        .put("fields", org.json.JSONArray().put("project"))
+                    val (code, json) = api.searchPost(body)
+                    if (code == 200) {
+                        val issues = json.optJSONArray("issues") ?: org.json.JSONArray()
+                        val keys = mutableSetOf<String>()
+                        for (i in 0 until issues.length()) {
+                            val f = issues.optJSONObject(i)?.optJSONObject("fields")
+                            val pk = f?.optJSONObject("project")?.optString("key")
+                            if (!pk.isNullOrBlank()) keys.add(pk)
+                        }
+                        myProjectKeysCache = keys
+                        myProjectsCacheTime = now
+                    }
+                } catch (_: Throwable) {}
+            }
+
+            runUi {
+                setStatus(false, "Connected as $name")
+                refreshProjectList()
+            }
         }
+    }
+
+    private fun refreshProjectList() {
+        val prev = projectCombo.selectedItem as? JiraProject
+        val filtered = if (myProjectsCheck.isSelected && myProjectKeysCache.isNotEmpty())
+            allProjectsCache.filter { it.key in myProjectKeysCache }
+        else allProjectsCache
+        projectCombo.removeAllItems()
+        filtered.forEach { projectCombo.addItem(it) }
+        // Restore selection if possible
+        val restore = filtered.find { it.key == prev?.key }
+        if (restore != null) projectCombo.selectedItem = restore
+        else if (filtered.isNotEmpty()) projectCombo.selectedIndex = 0
     }
     private fun onProjectSelected() {
         val p = projectCombo.selectedItem as? JiraProject ?: return
