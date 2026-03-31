@@ -112,8 +112,6 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private var currentIssue: JiraIssue? = null
     private val commentInFlight = AtomicBoolean(false)
     private val mrInFlight      = AtomicBoolean(false)
-    private lateinit var rightPanel: JPanel
-    private lateinit var rightEmptyLabel: JBLabel
     private lateinit var detailTabsRef: JTabbedPane
     private val cards = CardLayout()
     private val cardPanel = JPanel(cards)
@@ -168,11 +166,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val rightCardPanel = JPanel(rightCards)
     private fun buildSplitter() = JBSplitter(false, 0.28f).apply {
         firstComponent = buildLeft()
-        rightEmptyLabel = JBLabel("Select a project and issue").apply { horizontalAlignment = JLabel.CENTER; foreground = gray() }
-        rightCardPanel.add(JPanel(java.awt.GridBagLayout()).apply { add(rightEmptyLabel) }, "empty")
-        rightCardPanel.add(buildRight(), "content")
-        rightCards.show(rightCardPanel, "empty")
-        secondComponent = rightCardPanel
+        secondComponent = buildRight()
     }
     private fun buildLeft(): JPanel {
         val top = JPanel(BorderLayout(4,4)).apply { border = JBUI.Borders.empty(6,8,4,8); add(JBLabel("Project:").apply { preferredSize = Dimension(52,24) }, BorderLayout.WEST); add(projectCombo, BorderLayout.CENTER); add(myProjectsCheck, BorderLayout.EAST) }
@@ -303,7 +297,6 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         commentsModel.clear()
         worklogsModel.clear()
         activityModel.clear()
-        rightCards.show(rightCardPanel, "empty")
         cards.show(cardPanel, "welcome")
     }
     private fun onStarted(issueKey: String) { runBg(onError={}) { val ts = try { service<JiraService>().apiFromSettings().getTransitions(issueKey) } catch (_: Throwable) { return@runBg }; if (ts.isEmpty()) return@runBg; val cs = currentIssue?.status; runUi { val d = TransitionPickerDialog(project, issueKey, ts, cs); d.title = "Tracking started — move \"$issueKey\"?"; if (d.showAndGet()) d.selectedTransition?.let { applyTransition(issueKey, it) } } } }
@@ -422,7 +415,6 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     }
 
     private fun loadIssueDetails(issueKey: String) {
-        rightCards.show(rightCardPanel, "content")
         if (::detailTabsRef.isInitialized) detailTabsRef.selectedIndex = 0
         issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descPane.text = "<html><body>Loading...</body></html>"; commentsModel.clear(); worklogsModel.clear()
         runBg(onError = { runUi { descPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
