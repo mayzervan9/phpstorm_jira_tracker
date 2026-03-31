@@ -291,7 +291,7 @@ class JiraApi(private val auth: JiraAuth) {
         when (type) {
             "doc" -> content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }
             "paragraph" -> { sb.append("<p>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</p>") }
-            "heading" -> { val lvl = node.optInt("attrs.level", 3).coerceIn(1,6); sb.append("<h$lvl>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</h$lvl>") }
+            "heading" -> { val lvl = (node.optJSONObject("attrs")?.optInt("level", 3) ?: 3).coerceIn(1,6); sb.append("<h$lvl>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</h$lvl>") }
             "text" -> {
                 var t = text.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
                 val marks = node.optJSONArray("marks")
@@ -300,7 +300,10 @@ class JiraApi(private val auth: JiraAuth) {
                         "strong" -> t = "<b>$t</b>"
                         "em" -> t = "<i>$t</i>"
                         "code" -> t = "<code>$t</code>"
+                        "underline" -> t = "<u>$t</u>"
+                        "strike" -> t = "<s>$t</s>"
                         "link" -> { val href = marks.getJSONObject(i).optJSONObject("attrs")?.optString("href") ?: ""; t = "<a href='$href'>$t</a>" }
+                        "textColor" -> { val color = marks.getJSONObject(i).optJSONObject("attrs")?.optString("color") ?: ""; if (color.isNotBlank()) t = "<span style='color:$color'>$t</span>" }
                     }
                 }
                 sb.append(t)
@@ -315,6 +318,11 @@ class JiraApi(private val auth: JiraAuth) {
             "mediaGroup", "mediaSingle" -> content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }
             "media" -> { val id = node.optJSONObject("attrs")?.optString("id") ?: ""; sb.append("<p>[media: $id]</p>") }
             "inlineCard" -> { val url = node.optJSONObject("attrs")?.optString("url") ?: ""; sb.append("<a href='$url'>$url</a>") }
+            "status" -> { val attrs = node.optJSONObject("attrs"); val statusText = attrs?.optString("text") ?: ""; val color = attrs?.optString("color") ?: "neutral"; val sc = when(color) { "green" -> "#1B7F3A"; "blue" -> "#0052CC"; "red" -> "#C62828"; "yellow" -> "#F9A825"; else -> "#888888" }; sb.append("<span style='color:$sc;font-weight:bold'>[$statusText]</span>") }
+            "mention" -> { val attrs = node.optJSONObject("attrs"); val mentionText = attrs?.optString("text") ?: "@user"; sb.append("<b>$mentionText</b>") }
+            "emoji" -> { val attrs = node.optJSONObject("attrs"); val shortName = attrs?.optString("shortName") ?: ""; sb.append(shortName) }
+            "panel" -> { val panelType = node.optJSONObject("attrs")?.optString("panelType") ?: "info"; val borderColor = when(panelType) { "info" -> "#0052CC"; "note" -> "#F9A825"; "success" -> "#1B7F3A"; "warning" -> "#E65100"; "error" -> "#C62828"; else -> "#888888" }; sb.append("<div style='border-left:3px solid $borderColor;padding:4px 8px;margin:4px 0'>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</div>") }
+            "expand" -> { val title = node.optJSONObject("attrs")?.optString("title") ?: "Details"; sb.append("<details><summary><b>$title</b></summary>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</details>") }
             "table" -> { sb.append("<table border='1' cellpadding='4'>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</table>") }
             "tableRow" -> { sb.append("<tr>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</tr>") }
             "tableHeader" -> { sb.append("<th>"); content?.let { for (i in 0 until it.length()) sb.append(adfToHtml(it.getJSONObject(i))) }; sb.append("</th>") }
@@ -386,7 +394,6 @@ class JiraApi(private val auth: JiraAuth) {
         }
     }
 
-    /** Returns all statuses available in the project */
     /** Returns all statuses available in the project as name->id pairs */
     fun getProjectStatuses(projectKey: String): List<Pair<String, String>> {
         val (code, text) = requestText("GET", "$base/rest/api/3/project/$projectKey/statuses", null)
@@ -493,10 +500,13 @@ class JiraApi(private val auth: JiraAuth) {
     }
 
     fun addComment(issueKey: String, bodyText: String) {
-        val payload = JSONObject().put("body", bodyText)
-        val (code, _) = tryPostJson("$base/rest/api/3/issue/$issueKey/comment", payload)
+        // v3 expects ADF format
+        val payloadV3 = JSONObject().put("body", adfText(bodyText))
+        val (code, _) = tryPostJson("$base/rest/api/3/issue/$issueKey/comment", payloadV3)
         if (code == 201) return
-        val (c2, _) = tryPostJson("$base/rest/api/2/issue/$issueKey/comment", payload)
+        // v2 accepts plain string
+        val payloadV2 = JSONObject().put("body", bodyText)
+        val (c2, _) = tryPostJson("$base/rest/api/2/issue/$issueKey/comment", payloadV2)
         if (c2 != 201) throw RuntimeException("Add comment failed: HTTP $code / $c2")
     }
 
@@ -720,14 +730,14 @@ class JiraApi(private val auth: JiraAuth) {
     private fun doRequest(method: String, url: String, body: String?, authHeader: String): Pair<Int, String> {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
-            connectTimeout = 15000
-            readTimeout = 30000
+            connectTimeout = 20000
+            readTimeout = 45000
             setRequestProperty("Authorization", authHeader)
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "JiraTimeTrackerPlugin")
+            setRequestProperty("User-Agent", "JiraTimeTrackerPlugin/0.5.0")
             if (body != null) {
                 doOutput = true
-                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
             }
         }
         return try {
@@ -740,6 +750,12 @@ class JiraApi(private val auth: JiraAuth) {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             Pair(code, text)
+        } catch (t: java.net.SocketTimeoutException) {
+            Pair(-1, "Connection timed out: ${t.message}")
+        } catch (t: java.net.ConnectException) {
+            Pair(-1, "Connection refused: ${t.message}")
+        } catch (t: javax.net.ssl.SSLException) {
+            Pair(-1, "SSL error: ${t.message}")
         } catch (t: Throwable) {
             Pair(-1, t.message.orEmpty())
         } finally {

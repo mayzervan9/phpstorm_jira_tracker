@@ -22,11 +22,11 @@ class JiraProfilesState : PersistentStateComponent<JiraProfilesData> {
     var activeProfileId: String? get() = data.activeProfileId.ifBlank { null }
         set(v) { data.activeProfileId = v ?: "" }
 
-    fun activeProfile(): JiraProfile? = profiles.find { it.id == activeProfileId }
+    @Synchronized fun activeProfile(): JiraProfile? = profiles.find { it.id == activeProfileId }
 
-    fun addProfile(profile: JiraProfile) { profiles.add(profile) }
+    @Synchronized fun addProfile(profile: JiraProfile) { profiles.add(profile) }
 
-    fun removeProfile(id: String) {
+    @Synchronized fun removeProfile(id: String) {
         profiles.removeIf { it.id == id }
         clearToken(id)
         if (activeProfileId == id) activeProfileId = profiles.firstOrNull()?.id

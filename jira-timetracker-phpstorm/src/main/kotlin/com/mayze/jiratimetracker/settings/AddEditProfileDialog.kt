@@ -113,7 +113,9 @@ class AddEditProfileDialog(
 
     override fun doValidate(): ValidationInfo? {
         if (nameField.text.isBlank()) return ValidationInfo("Profile name is required", nameField)
-        if (baseUrlField.text.isBlank()) return ValidationInfo("Base URL is required", baseUrlField)
+        val url = baseUrlField.text.trim()
+        if (url.isBlank()) return ValidationInfo("Base URL is required", baseUrlField)
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return ValidationInfo("Base URL must start with http:// or https://", baseUrlField)
         if (existing == null) {
             if (isCloudSelected()) {
                 if (cloudEmailField.text.isBlank()) return ValidationInfo("Email is required", cloudEmailField)

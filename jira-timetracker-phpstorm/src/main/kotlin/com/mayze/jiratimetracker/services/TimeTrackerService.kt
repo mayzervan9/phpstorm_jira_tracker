@@ -20,28 +20,27 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @Service(Service.Level.PROJECT)
 class TimeTrackerService(private val project: Project) {
+    private val lock = Any()
     private val todayByIssueSeconds = LinkedHashMap<String, Int>()
-    private var currentIssueKey: String? = null
-    private var activeIssueKey: String? = null
-    private var startedAtLocal: OffsetDateTime? = null
-    private var lastFlushAt: OffsetDateTime? = null
+    @Volatile private var currentIssueKey: String? = null
+    @Volatile private var activeIssueKey: String? = null
+    @Volatile private var startedAtLocal: OffsetDateTime? = null
+    @Volatile private var lastFlushAt: OffsetDateTime? = null
     private val accumulatedSeconds = AtomicInteger(0)
     private val running = AtomicBoolean(false)
     private val flushing = AtomicBoolean(false)
     private var scheduled: ScheduledFuture<*>? = null
     private var uiPulseScheduled: ScheduledFuture<*>? = null
 
-    // Current user identity (cached after first fetch)
-    private var currentUserAccountId: String? = null
-    private var currentUserKey: String? = null
-    private var currentUserName: String? = null
-    private var currentUserEmail: String? = null
-    private var currentUserDisplayName: String? = null
+    @Volatile private var currentUserAccountId: String? = null
+    @Volatile private var currentUserKey: String? = null
+    @Volatile private var currentUserName: String? = null
+    @Volatile private var currentUserEmail: String? = null
+    @Volatile private var currentUserDisplayName: String? = null
 
-    // Active worklog state
-    private var activeWorklogId: String? = null
-    private var activeWorklogStarted: OffsetDateTime? = null
-    private var activeWorklogBaseSeconds: Int = 0
+    @Volatile private var activeWorklogId: String? = null
+    @Volatile private var activeWorklogStarted: OffsetDateTime? = null
+    @Volatile private var activeWorklogBaseSeconds: Int = 0
 
     fun isRunning(): Boolean = running.get()
     fun getCurrentIssueKey(): String? = currentIssueKey
@@ -92,7 +91,7 @@ class TimeTrackerService(private val project: Project) {
                 activeWorklogId = linked?.id
                 activeWorklogStarted = linked?.started ?: now
                 activeWorklogBaseSeconds = linked?.timeSpentSeconds ?: 0
-                if (activeWorklogBaseSeconds > 0) todayByIssueSeconds[issueKey] = activeWorklogBaseSeconds
+                if (activeWorklogBaseSeconds > 0) synchronized(lock) { todayByIssueSeconds[issueKey] = activeWorklogBaseSeconds }
             } catch (_: Throwable) {
                 activeWorklogId = null
                 activeWorklogStarted = now
@@ -114,12 +113,15 @@ class TimeTrackerService(private val project: Project) {
     }
 
     fun stop() {
-        if (!running.get()) return
-        scheduled?.cancel(false)
+        if (!running.compareAndSet(true, false)) return
+        // Cancel scheduled tasks first to prevent race with flushTick
+        scheduled?.cancel(true)
         scheduled = null
         uiPulseScheduled?.cancel(false)
         uiPulseScheduled = null
-        running.set(false)
+        // Wait for any in-progress flush to complete (max 5 seconds)
+        var waitCount = 0
+        while (flushing.get() && waitCount < 100) { Thread.sleep(50); waitCount++ }
         val stoppedIssue = currentIssueKey.orEmpty()
         notify("Tracking stopped", "${stoppedIssue} — ${formatSecondsShort(accumulatedSeconds.get())} this session")
         currentIssueKey = null
@@ -181,7 +183,9 @@ class TimeTrackerService(private val project: Project) {
                     activeWorklogBaseSeconds = linked?.timeSpentSeconds ?: activeWorklogBaseSeconds
                 }
             }
-            todayByIssueSeconds[issue] = (todayByIssueSeconds[issue] ?: 0) + seconds
+            synchronized(lock) {
+                todayByIssueSeconds[issue] = (todayByIssueSeconds[issue] ?: 0) + seconds
+            }
             lastFlushAt = started
             publish()
         } catch (t: Throwable) {
@@ -223,30 +227,32 @@ class TimeTrackerService(private val project: Project) {
     }
 
     private fun snapshot(): TrackingSnapshot {
-        val issue = currentIssueKey
-        val liveExtra = if (running.get()) {
-            val anchor = lastFlushAt ?: startedAtLocal
-            if (anchor != null) {
-                (OffsetDateTime.now(ZoneId.systemDefault()).toEpochSecond() - anchor.toEpochSecond())
-                    .toInt().coerceAtLeast(0)
+        synchronized(lock) {
+            val issue = currentIssueKey
+            val liveExtra = if (running.get()) {
+                val anchor = lastFlushAt ?: startedAtLocal
+                if (anchor != null) {
+                    (OffsetDateTime.now(ZoneId.systemDefault()).toEpochSecond() - anchor.toEpochSecond())
+                        .toInt().coerceAtLeast(0)
+                } else 0
             } else 0
-        } else 0
 
-        val currentTracked = if (!issue.isNullOrBlank()) {
-            (todayByIssueSeconds[issue] ?: 0) + if (running.get()) liveExtra else 0
-        } else 0
+            val currentTracked = if (!issue.isNullOrBlank()) {
+                (todayByIssueSeconds[issue] ?: 0) + if (running.get()) liveExtra else 0
+            } else 0
 
-        val todayMap = LinkedHashMap(todayByIssueSeconds)
-        if (!issue.isNullOrBlank() && running.get()) {
-            todayMap[issue] = (todayMap[issue] ?: 0) + liveExtra
+            val todayMap = LinkedHashMap(todayByIssueSeconds)
+            if (!issue.isNullOrBlank() && running.get()) {
+                todayMap[issue] = (todayMap[issue] ?: 0) + liveExtra
+            }
+
+            return TrackingSnapshot(
+                running = running.get(),
+                activeIssueKey = activeIssueKey ?: currentIssueKey,
+                currentIssueTrackedSeconds = currentTracked,
+                todayByIssueSeconds = todayMap
+            )
         }
-
-        return TrackingSnapshot(
-            running = running.get(),
-            activeIssueKey = activeIssueKey ?: currentIssueKey,
-            currentIssueTrackedSeconds = currentTracked,
-            todayByIssueSeconds = todayMap
-        )
     }
 
     private fun publish() {

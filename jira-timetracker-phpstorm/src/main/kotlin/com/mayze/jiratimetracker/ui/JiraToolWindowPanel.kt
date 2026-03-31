@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
+import javax.swing.Timer as SwingTimer
 
 @Suppress("TooManyFunctions")
 class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout()) {
@@ -76,7 +77,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) { try { Desktop.getDesktop().browse(e.url.toURI()) } catch (_: Throwable) {} } }
     }
     private val fieldsPane = javax.swing.JEditorPane("text/html", "").apply {
-        isEditable = false; border = JBUI.Borders.empty(4)
+        isEditable = false; border = JBUI.Borders.empty(4); isOpaque = false
+        background = JBColor.PanelBackground
+        putClientProperty(javax.swing.JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
         addHyperlinkListener { e -> if (e.eventType == javax.swing.event.HyperlinkEvent.EventType.ACTIVATED) { try { Desktop.getDesktop().browse(e.url.toURI()) } catch (_: Throwable) {} } }
     }
     private val commentsModel = DefaultListModel<JiraComment>()
@@ -113,6 +116,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private val commentInFlight = AtomicBoolean(false)
     private val mrInFlight      = AtomicBoolean(false)
     private lateinit var detailTabsRef: JTabbedPane
+    private val searchDebounce = SwingTimer(300) { filterIssues() }.apply { isRepeats = false }
     private val cards = CardLayout()
     private val cardPanel = JPanel(cards)
 
@@ -261,7 +265,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         myProjectsCheck.addActionListener   { refreshProjectList() }
         scopeCombo.addActionListener        { loadIssues() }
         sortCombo.addActionListener         { filterIssues() }
-        searchField.addDocumentListener(object : DocumentListener { override fun insertUpdate(e: DocumentEvent?)=filterIssues(); override fun removeUpdate(e: DocumentEvent?)=filterIssues(); override fun changedUpdate(e: DocumentEvent?)=filterIssues() })
+        searchField.addDocumentListener(object : DocumentListener { override fun insertUpdate(e: DocumentEvent?)=searchDebounce.restart(); override fun removeUpdate(e: DocumentEvent?)=searchDebounce.restart(); override fun changedUpdate(e: DocumentEvent?)=searchDebounce.restart() })
         issuesList.addListSelectionListener { if (!it.valueIsAdjusting) { val i = issuesList.selectedValue ?: return@addListSelectionListener; project.service<TimeTrackerService>().setActiveIssue(i.key); loadIssueDetails(i.key) } }
         openInBrowserBtn.addActionListener { openBrowser() }
         copyLinkBtn.addActionListener      { copyLink() }
@@ -291,12 +295,21 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
     private fun resetToWelcome() {
         projectCombo.removeAllItems()
         issuesModel.clear()
+        allIssues = emptyList()
         allProjectsCache = emptyList()
         myProjectKeysCache = emptySet()
         currentIssue = null
         commentsModel.clear()
         worklogsModel.clear()
+        historyModel.clear()
         activityModel.clear()
+        issueTitleLabel.text = "Select a project and issue to get started"
+        issueStatusLabel.text = ""
+        estimateLabel.text = ""
+        descPane.text = ""
+        statusLabel.text = ""
+        profileLabel.text = "No profile"
+        profileLabel.foreground = gray()
         cards.show(cardPanel, "welcome")
     }
     private fun onStarted(issueKey: String) { runBg(onError={}) { val ts = try { service<JiraService>().apiFromSettings().getTransitions(issueKey) } catch (_: Throwable) { return@runBg }; if (ts.isEmpty()) return@runBg; val cs = currentIssue?.status; runUi { val d = TransitionPickerDialog(project, issueKey, ts, cs); d.title = "Tracking started — move \"$issueKey\"?"; if (d.showAndGet()) d.selectedTransition?.let { applyTransition(issueKey, it) } } } }
@@ -322,12 +335,12 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
             if (myProjectKeysCache.isEmpty() || now - myProjectsCacheTime > 15 * 60 * 1000) {
                 runUi { setStatus(true, "Finding your projects...") }
                 val keys = mutableSetOf<String>()
-                // Try full JQL first, then simpler fallback
-                for (jql in listOf(
+                val jqlVariants = listOf(
                     "(assignee = currentUser() OR reporter = currentUser() OR watcher = currentUser()) ORDER BY updated DESC",
                     "(assignee = currentUser() OR reporter = currentUser()) ORDER BY updated DESC",
                     "assignee = currentUser() ORDER BY updated DESC"
-                )) {
+                )
+                for (jql in jqlVariants) {
                     try {
                         val body = org.json.JSONObject().put("jql", jql).put("maxResults", 200)
                             .put("fields", org.json.JSONArray().put("project"))
@@ -384,15 +397,17 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         }
         loadIssues()
     }
+    private val issuesLoading = AtomicBoolean(false)
     private fun loadIssues() {
         val p = projectCombo.selectedItem as? JiraProject ?: return
+        if (!issuesLoading.compareAndSet(false, true)) return
         val sel = statusFilterCombo.selectedItem as? String
         val statusIds = if (sel == null || sel == "All statuses") emptyList() else listOfNotNull(statusIdMap[sel])
         setStatus(true, "Loading...")
-        runBg(onError = { setStatus(false, "Error: ${it.message}") }) {
+        runBg(onError = { setStatus(false, "Error: ${it.message}"); issuesLoading.set(false) }) {
             val scope = scopeCombo.selectedItem as? String ?: "My issues"
             val issues = service<JiraService>().apiFromSettings().searchMyIssues(p.key, 100, statusIds, noEstimateCheck.isSelected, scope, activeSprintCheck.isSelected)
-            runUi { allIssues = issues; setStatus(false, "${p.key} - ${issues.size} issues"); filterIssues(); if (issuesModel.size() > 0) issuesList.selectedIndex = 0 }
+            runUi { allIssues = issues; setStatus(false, "${p.key} - ${issues.size} issues"); filterIssues(); if (issuesModel.size() > 0) issuesList.selectedIndex = 0; issuesLoading.set(false) }
         }
     }
     private fun filterIssues() {
@@ -416,8 +431,9 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
 
     private fun loadIssueDetails(issueKey: String) {
         if (::detailTabsRef.isInitialized) detailTabsRef.selectedIndex = 0
-        issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descPane.text = "<html><body>Loading...</body></html>"; commentsModel.clear(); worklogsModel.clear()
-        runBg(onError = { runUi { descPane.text = "<html><body>Error: ${it.message}</body></html>" } }) {
+        issueTitleLabel.text = issueKey; issueStatusLabel.text = ""; estimateLabel.text = ""; descPane.text = "<html><body style='background:transparent'>Loading...</body></html>"; commentsModel.clear(); worklogsModel.clear()
+        refreshButtons(project.service<TimeTrackerService>().getSnapshot())
+        runBg(onError = { runUi { descPane.text = "<html><body style='background:transparent'>Error: ${it.message}</body></html>"; currentIssue = null; refreshButtons(project.service<TimeTrackerService>().getSnapshot()) } }) {
             val api = service<JiraService>().apiFromSettings(); val issue = api.getIssueDetails(issueKey); val cs = api.getComments(issueKey); val wls = api.getWorklogs(issueKey)
             val descHtml = try { api.getIssueDescriptionHtml(issueKey) } catch (_: Throwable) { "<html><body>${issue.description ?: ""}</body></html>" }
             runUi {
@@ -433,7 +449,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
 
                 commentsModel.clear(); cs.takeLast(MAX_COMMENTS).reversed().forEach { commentsModel.addElement(it) }
                 worklogsModel.clear(); wls.takeLast(MAX_WORKLOGS).reversed().forEach { worklogsModel.addElement(it) }
-                openInBrowserBtn.isEnabled = true; copyLinkBtn.isEnabled = true; setEstimateBtn.isEnabled = true; changeStatusBtn.isEnabled = true
+                refreshButtons(project.service<TimeTrackerService>().getSnapshot())
             }
         }
     }
@@ -453,7 +469,7 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
                     "<td style='padding:4px 8px;border-bottom:1px solid #3C3F41;word-wrap:break-word'>$wrapped</td></tr>"
                 }
             }
-            val html = "<html><body style='font-family:sans-serif;font-size:12px;margin:0;padding:0'>" +
+            val html = "<html><body style='font-family:sans-serif;font-size:12px;margin:0;padding:0;background:transparent'>" +
                 "<table cellspacing='0' cellpadding='0' width='100%'>$rows</table></body></html>"
             runUi { fieldsPane.text = html; fieldsPane.caretPosition = 0 }
         }
@@ -566,10 +582,26 @@ class JiraToolWindowPanel(private val project: Project) : JPanel(BorderLayout())
         refreshButtons(s)
     }
     private fun refreshButtons(s: TrackingSnapshot) {
+        val hasIssue = issuesList.selectedValue != null || s.running
+        val hasProject = projectCombo.selectedItem != null
         startStopBtn.isEnabled = s.running || issuesList.selectedValue != null
         addWorklogBtn.isEnabled = issuesList.selectedValue != null
         startStopBtn.text = if (s.running) "Stop" else "Start"
         startStopBtn.foreground = if (s.running) JBColor(Color(0xC62828), Color(0xEF5350)) else JBColor(Color(0x1B7F3A), Color(0x4CAF50))
+        openInBrowserBtn.isEnabled = currentIssue != null
+        copyLinkBtn.isEnabled = currentIssue != null
+        copyKeyBtn.isEnabled = currentIssue != null
+        setEstimateBtn.isEnabled = currentIssue != null
+        changeStatusBtn.isEnabled = currentIssue != null
+        addCommentBtn.isEnabled = currentIssue != null
+        saveMrBtn.isEnabled = currentIssue != null
+        // Filters depend on project
+        statusFilterCombo.isEnabled = hasProject
+        scopeCombo.isEnabled = hasProject
+        sortCombo.isEnabled = hasProject
+        noEstimateCheck.isEnabled = hasProject
+        activeSprintCheck.isEnabled = hasProject
+        searchField.isEnabled = hasProject
     }
     private fun refreshProfileLabel() {
         val p = service<JiraProfilesState>().activeProfile()
